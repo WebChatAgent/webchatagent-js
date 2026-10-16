@@ -36,14 +36,20 @@
 
 Your chatbot already knows your website, PDFs and help articles. It books appointments, searches products and hands tough questions to your team. This package puts all of that behind a few typed function calls, so you can ship it in **your** interface instead of a widget.
 
-| | |
-|---|---|
-| ⚡ **Streaming in five lines** | Answers appear word by word, already cleaned for display. Stop button included. |
-| 🧑‍💼 **Human handover built in** | When the bot hands over, your team answers live. Reconnects and missed messages are handled for you. |
-| 📎 **Files, leads, feedback** | Visitors send invoices or photos, fill your lead forms, rate answers. Everything lands in your dashboard. |
-| 🔗 **Sources and follow-ups** | Every answer comes with the pages it used and suggested next questions. |
-| 🧩 **Works everywhere** | React, Vue, Svelte, plain HTML, Node.js, Bun, Deno. ESM, no dependencies. |
-| 🤖 **Ready for AI coding agents** | Claude Code, Cursor or Copilot get [rules and a skeleton](#for-ai-coding-agents) to build your chat right. |
+<table>
+  <tr>
+    <td width="50%" valign="top"><h3>⚡ Streaming in five lines</h3>Answers appear word by word, already cleaned for display. Stop button included.</td>
+    <td width="50%" valign="top"><h3>🧑‍💼 Human handover built in</h3>When the bot hands over, your team answers live. Reconnects and missed messages are handled for you.</td>
+  </tr>
+  <tr>
+    <td valign="top"><h3>📎 Files, leads, feedback</h3>Visitors send invoices or photos, fill your lead forms, rate answers. Everything lands in your dashboard.</td>
+    <td valign="top"><h3>🔗 Sources and follow-ups</h3>Every answer comes with the pages it used and suggested next questions.</td>
+  </tr>
+  <tr>
+    <td valign="top"><h3>🧩 Works everywhere</h3>React, Vue, Svelte, plain HTML, Node.js, Bun, Deno. ESM, strict TypeScript types, no dependencies.</td>
+    <td valign="top"><h3>🤖 Ready for AI coding agents</h3>Claude Code, Cursor or Copilot get <a href="#for-ai-coding-agents">rules and a skeleton</a> to build your chat right.</td>
+  </tr>
+</table>
 
 ## Start in 30 seconds
 
