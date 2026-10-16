@@ -2,7 +2,7 @@
   <a href="https://webchatagent.com"><img src="https://raw.githubusercontent.com/WebChatAgent/.github/main/profile/logo.png" width="88" alt="WebChatAgent"></a>
 </p>
 
-<h1 align="center">webchatagent</h1>
+<h1 align="center">WebChatAgent JavaScript SDK</h1>
 
 <p align="center">
   <b>Build your own AI chat in minutes, powered by your WebChatAgent chatbot.</b><br>
@@ -26,13 +26,13 @@
 </p>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/WebChatAgent/webchatagent-js/main/.github/assets/demo.png" width="760" alt="A custom chat UI built with webchatagent: streamed answer, follow-up suggestions, AI label, feedback and handover button">
+  <img src="https://raw.githubusercontent.com/WebChatAgent/webchatagent-js/main/.github/assets/demo.png" width="760" alt="A custom chat UI built with the WebChatAgent SDK: streamed answer, follow-up suggestions, AI label, feedback and handover button">
   <br><sub>A complete chat in one HTML file with this package, no framework: <a href="examples/browser.html">examples/browser.html</a></sub>
 </p>
 
 ---
 
-## Why webchatagent?
+## Why the WebChatAgent SDK?
 
 Your chatbot already knows your website, PDFs and help articles. It books appointments, searches products and hands tough questions to your team. This package puts all of that behind a few typed function calls, so you can ship it in **your** interface instead of a widget.
 
