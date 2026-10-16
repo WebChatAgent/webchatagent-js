@@ -1,0 +1,404 @@
+<!doctype html>
+<!--
+  Complete chat UI built with the webchatagent SDK, no framework, no build step.
+
+    npm run build
+    npx serve .            (or: python3 -m http.server 8080)
+    open http://localhost:3000/examples/browser.html?chatbotId=<your-chatbot-id>
+
+  Optional: &baseUrl=https://your-white-label-domain. Open it via http://localhost, not file://:
+  the API checks where requests come from.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebChatAgent SDK demo</title>
+  <style>
+    :root { --accent: #2563eb; --bot: #f3f4f6; --line: #e5e7eb; --muted: #6b7280; font-family: system-ui, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #fafafa; color: #111827; }
+    .chat { display: flex; flex-direction: column; height: 100dvh; max-width: 720px; margin: 0 auto; background: #fff; border-inline: 1px solid var(--line); }
+    header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    header img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
+    header div { flex: 1; min-width: 0; }
+    h1 { font-size: 1rem; margin: 0; }
+    small, .meta { color: var(--muted); font-size: .75rem; }
+    button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 6px 10px; min-height: 36px; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    #messages { flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    #messages li { max-width: 85%; padding: 8px 12px; border-radius: 12px; overflow-wrap: anywhere; }
+    li.user { align-self: flex-end; background: var(--accent); color: #fff; }
+    li.user.pending { opacity: .6; }
+    li.user.failed { background: #b91c1c; }
+    li.bot, li.agent { align-self: flex-start; background: var(--bot); }
+    li.agent { border-left: 3px solid #16a34a; }
+    li.system { align-self: center; background: none; color: var(--muted); font-size: .85rem; }
+    li p { margin: .25em 0; }
+    li img { max-width: 100%; border-radius: 8px; }
+    .sources { margin-top: 6px; font-size: .8rem; }
+    .rating { display: flex; gap: 4px; margin-top: 4px; }
+    .rating button { min-height: 28px; padding: 2px 8px; }
+    .rating button[aria-pressed="true"] { border-color: var(--accent); }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 8px; }
+    .notice { margin: 0; padding: 8px 16px; font-size: .85rem; background: #fffbeb; border-bottom: 1px solid var(--line); }
+    .notice.error { background: #fef2f2; color: #991b1b; }
+    #typing { margin: 0 16px 8px; }
+    #composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+    #input { flex: 1; min-width: 0; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+    footer { padding: 6px 16px 10px; text-align: center; font-size: .75rem; }
+    footer a { color: var(--muted); }
+    dialog { border: 1px solid var(--line); border-radius: 12px; width: min(420px, calc(100vw - 32px)); }
+    dialog label { display: block; margin: 0 0 10px; font-size: .9rem; }
+    dialog input:not([type=checkbox]), dialog select, dialog textarea { display: block; width: 100%; margin-top: 4px; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
+    dialog .invalid { border-color: #b91c1c !important; }
+    dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 0; margin: 12px 0 0; }
+  </style>
+</head>
+<body>
+  <main class="chat">
+    <header>
+      <img id="avatar" alt="" hidden>
+      <div>
+        <h1 id="title">Chat</h1>
+        <small id="state">Loading…</small>
+      </div>
+      <button type="button" id="end-live" hidden>End live chat</button>
+      <button type="button" id="reset">New chat</button>
+    </header>
+    <p id="error" class="notice error" role="alert" hidden></p>
+    <details id="privacy" class="notice" hidden><summary>Privacy notice</summary><div></div></details>
+    <ol id="messages" aria-live="polite"></ol>
+    <small id="typing" hidden>A team member is typing…</small>
+    <div id="suggestions" class="chips"></div>
+    <div id="actions" class="chips"></div>
+    <small id="attachment" class="chips" hidden></small>
+    <form id="composer">
+      <input id="file" type="file" hidden>
+      <button type="button" id="attach" aria-label="Attach a file" hidden>📎</button>
+      <input id="input" maxlength="700" placeholder="Type a message" autocomplete="off" aria-label="Message">
+      <button class="primary" id="send">Send</button>
+      <button type="button" id="stop" hidden>Stop</button>
+    </form>
+    <footer id="branding" hidden><a target="_blank" rel="noopener"></a></footer>
+  </main>
+  <dialog id="dialog"><form method="dialog" id="dialog-form"></form></dialog>
+
+  <script type="module">
+    import { marked } from 'https://cdn.jsdelivr.net/npm/marked@18.0.14/lib/marked.esm.js'
+    import DOMPurify from 'https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.es.mjs'
+    import { WebChatAgent, WebChatAgentError, MAX_MESSAGE_LENGTH } from '../dist/index.js'
+
+    const $ = (id) => document.getElementById(id)
+    const params = new URLSearchParams(location.search)
+    const SYSTEM_TEXT = { agent_joined: 'A team member joined the chat.', ended: 'The live chat has ended.', timeout: 'Nobody was available. The assistant continues.' }
+    const shown = new Set() // server message IDs already rendered
+    let chat, config, live = null, attachment = null, controller = null, typingTimer
+
+    const markdown = (text) => DOMPurify.sanitize(marked.parse(text, { async: false }))
+    const scroll = () => { $('messages').scrollTop = $('messages').scrollHeight }
+
+    function showError(error) {
+      if (error?.name === 'AbortError') return
+      $('error').textContent = error instanceof WebChatAgentError ? error.message : String(error)
+      $('error').hidden = false
+    }
+
+    function addMessage(role, { text = '', html, file, id } = {}) {
+      if (id != null) shown.add(id)
+      const li = document.createElement('li')
+      li.className = role
+      const body = document.createElement('div')
+      if (html !== undefined) body.innerHTML = html
+      else body.textContent = text
+      li.append(body)
+      if (file) {
+        const link = document.createElement('a')
+        link.href = file.url
+        link.target = '_blank'
+        if (file.isImage) { const img = document.createElement('img'); img.src = file.url; img.alt = file.name; link.append(img) }
+        else link.textContent = `📎 ${file.name}`
+        li.append(link)
+      }
+      $('messages').append(li)
+      scroll()
+      return li
+    }
+
+    function renderBotDetails(li, reply) {
+      if (reply.aiGenerated) li.insertAdjacentHTML('beforeend', '<div class="meta">AI-generated</div>')
+      const links = reply.sources.filter((s) => s.type === 'web')
+      if (links.length) {
+        const list = document.createElement('div')
+        list.className = 'sources'
+        for (const s of links) {
+          const url = new URL(s.source)
+          const a = Object.assign(document.createElement('a'), { href: url.href, target: '_blank', rel: 'noopener', textContent: url.hostname + url.pathname })
+          list.append(a, document.createElement('br'))
+        }
+        li.append(list)
+      }
+      if (config.features.feedback && reply.aiGenerated) {
+        const rating = document.createElement('div')
+        rating.className = 'rating'
+        for (const [value, label] of [['up', '👍'], ['down', '👎']]) {
+          const button = Object.assign(document.createElement('button'), { type: 'button', textContent: label, ariaLabel: value === 'up' ? 'Helpful' : 'Not helpful' })
+          button.setAttribute('aria-pressed', 'false')
+          button.onclick = async () => {
+            try {
+              await chat.feedback(reply, value)
+              rating.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === button)))
+            } catch (error) { showError(error) }
+          }
+          rating.append(button)
+        }
+        li.append(rating)
+      }
+    }
+
+    function renderSuggestions(items) {
+      $('suggestions').replaceChildren(...items.map(({ label, text }) => {
+        const button = Object.assign(document.createElement('button'), { type: 'button', textContent: label })
+        button.onclick = () => submit(text)
+        return button
+      }))
+    }
+
+    function renderHistory(message) {
+      if (shown.has(message.id)) return
+      const file = message.sources.find((s) => s.type === 'file')?.data
+      if (message.role === 'system') return message.event && addMessage('system', { text: SYSTEM_TEXT[message.event], id: message.id })
+      if (message.role === 'user') return addMessage('user', { text: file ? '' : message.text, file, id: message.id })
+      const li = addMessage(message.role === 'agent' ? 'agent' : 'bot', { html: markdown(message.text), id: message.id })
+      if (message.role === 'assistant') renderBotDetails(li, { ...message, question: '', aiGenerated: true })
+    }
+
+    function setLiveUi(active, label) {
+      $('end-live').hidden = !active
+      $('state').textContent = label
+      $('human')?.toggleAttribute('hidden', active)
+    }
+
+    function openLiveChat() {
+      if (live?.active) return live
+      live = chat.liveChat()
+      setLiveUi(true, 'Waiting for a team member…')
+      live.on('status', ({ status }) => setLiveUi(status !== 'closed', status === 'open' ? 'Chatting with a team member' : 'Waiting for a team member…'))
+      live.on('disconnected', () => { $('state').textContent = 'Reconnecting…' })
+      live.on('ready', async () => {
+        if (live.status) setLiveUi(true, live.status === 'open' ? 'Chatting with a team member' : 'Waiting for a team member…')
+        try { (await chat.history()).forEach(renderHistory) } catch (error) { showError(error) } // catch up after reconnects
+      })
+      live.on('message', (m) => {
+        if (m.role === 'user' || (m.id != null && shown.has(m.id))) return // own messages are rendered when sent
+        if (m.role === 'system') return m.event && addMessage('system', { text: SYSTEM_TEXT[m.event], id: m.id })
+        addMessage('agent', { html: markdown(m.text), file: m.file, id: m.id })
+      })
+      live.on('typing', (isTyping) => { $('typing').hidden = !isTyping })
+      live.on('ended', () => {
+        $('typing').hidden = true
+        addMessage('system', { text: SYSTEM_TEXT.ended })
+        setLiveUi(false, 'Assistant')
+      })
+      return live
+    }
+
+    async function submit(text) {
+      text = text.trim()
+      if ((!text && !attachment) || controller) return
+      $('error').hidden = true
+      $('input').value = ''
+      renderSuggestions([])
+
+      if (live?.active && (live.status === 'waiting' || live.status === 'open')) {
+        const li = addMessage('user', { text })
+        li.classList.add('pending')
+        try { const sent = await live.send(text); shown.add(sent.id); li.classList.remove('pending') }
+        catch (error) { li.classList.replace('pending', 'failed'); showError(error) }
+        return
+      }
+
+      if (text) addMessage('user', { text })
+      const options = attachment ? { attachment } : {}
+      attachment = null
+      $('attachment').hidden = true
+      const li = addMessage('bot', { text: '…' })
+      const body = li.firstChild
+      controller = new AbortController()
+      $('stop').hidden = false
+      try {
+        for await (const event of chat.stream(text, { ...options, signal: controller.signal })) {
+          if (event.type === 'text') { body.innerHTML = markdown(event.text); scroll() }
+          if (event.type === 'tool') body.textContent = 'Looking that up…'
+          if (event.type === 'done') {
+            const { reply } = event
+            if (reply.mode === 'human') {
+              if (reply.text) body.innerHTML = markdown(reply.text)
+              else li.remove()
+              openLiveChat()
+              continue
+            }
+            body.innerHTML = markdown(reply.text)
+            renderBotDetails(li, reply)
+            renderSuggestions(reply.suggestions)
+            if (reply.attachmentTruncated) addMessage('system', { text: 'Only the beginning of the file was read.' })
+            if (reply.conversationTooLong) addMessage('system', { text: 'This conversation is full. Start a new chat to continue.' })
+          }
+        }
+      } catch (error) {
+        body.textContent = error?.name === 'AbortError' ? 'Stopped.' : 'Sorry, something went wrong.'
+        showError(error)
+      } finally {
+        controller = null
+        $('stop').hidden = true
+        scroll()
+      }
+    }
+
+    function openDialog(title, fields, submitLabel, onSubmit) {
+      const form = $('dialog-form')
+      form.replaceChildren(Object.assign(document.createElement('h2'), { textContent: title }))
+      for (const field of fields) {
+        if (field.type === 'info') { form.append(Object.assign(document.createElement('p'), { textContent: field.label })); continue }
+        const label = document.createElement('label')
+        label.append(field.label + (field.required ? ' *' : ''))
+        let input
+        if (field.type === 'textarea') input = document.createElement('textarea')
+        else if (field.type === 'select') {
+          input = document.createElement('select')
+          input.append(new Option('', ''), ...(field.options ?? []).map((o) => new Option(o, o)))
+        } else input = Object.assign(document.createElement('input'), { type: field.type === 'checkbox' ? 'checkbox' : field.type })
+        input.name = field.id
+        if (field.placeholder) input.placeholder = field.placeholder
+        label.append(input)
+        form.append(label)
+      }
+      const menu = document.createElement('menu')
+      const cancel = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Cancel', onclick: () => $('dialog').close() })
+      const ok = Object.assign(document.createElement('button'), { className: 'primary', textContent: submitLabel })
+      menu.append(cancel, ok)
+      form.append(menu)
+      form.onsubmit = async (event) => {
+        event.preventDefault()
+        const values = Object.fromEntries(fields.map((f) => {
+          const input = form.elements.namedItem(f.id)
+          return [f.id, !input ? undefined : input.type === 'checkbox' ? input.checked : input.value]
+        }))
+        form.querySelectorAll('.invalid').forEach((el) => el.classList.remove('invalid'))
+        try {
+          await onSubmit(values)
+          $('dialog').close()
+        } catch (error) {
+          const { missing = [], invalid = [] } = error instanceof WebChatAgentError && error.code === 'INVALID_INPUT' ? error.body ?? {} : {}
+          for (const id of [...missing, ...invalid]) form.elements.namedItem(id)?.classList.add('invalid')
+          if (!missing.length && !invalid.length) showError(error)
+        }
+      }
+      $('dialog').showModal()
+    }
+
+    async function requestHuman(values = {}) {
+      const result = await chat.requestHuman(values)
+      if (!result.ok) return addMessage('system', { text: 'Live chat is not available right now.' })
+      addMessage('system', { text: 'We are getting a team member for you.' })
+      openLiveChat()
+    }
+
+    function renderActions() {
+      const buttons = config.forms.map((form) => {
+        const button = Object.assign(document.createElement('button'), { type: 'button', textContent: form.name })
+        button.onclick = () => openDialog(form.name, form.fields, form.submitLabel || 'Send', async (values) => {
+          await chat.submitForm(form, values)
+          addMessage('system', { text: form.successMessage || 'Thank you! We will get back to you.' })
+        })
+        return button
+      })
+      if (config.features.liveChat) {
+        const human = Object.assign(document.createElement('button'), { type: 'button', id: 'human', textContent: 'Talk to a person' })
+        human.onclick = () => {
+          const fields = [
+            ...(config.features.askName ? [{ id: 'name', type: 'text', label: 'Name', required: true }] : []),
+            ...(config.features.askEmail ? [{ id: 'email', type: 'email', label: 'E-mail', required: true }] : []),
+          ]
+          if (!fields.length) return requestHuman().catch(showError)
+          openDialog('Talk to a person', fields, 'Request', (values) => {
+            const missing = fields.filter((f) => !values[f.id]).map((f) => f.id)
+            if (missing.length) throw new WebChatAgentError('Required', { code: 'INVALID_INPUT', body: { missing, invalid: [] } })
+            return requestHuman(values)
+          })
+        }
+        buttons.push(human)
+      }
+      $('actions').replaceChildren(...buttons)
+    }
+
+    function welcome() {
+      if (config.widget.welcomeMessage) addMessage('bot', { html: markdown(config.widget.welcomeMessage) })
+      renderSuggestions((config.widget.promptButtons ?? []).map((b) => ({ label: b.title, text: b.action })))
+    }
+
+    async function start() {
+      try {
+        chat = new WebChatAgent({ chatbotId: params.get('chatbotId') ?? '', baseUrl: params.get('baseUrl') ?? undefined, storage: localStorage })
+      } catch (error) {
+        $('state').textContent = 'Add ?chatbotId=<your chatbot ID> to the URL.'
+        return showError(error)
+      }
+      config = await chat.getConfig()
+      if (config.archived) { $('state').textContent = 'This chat is not available.'; $('composer').hidden = true; return }
+      const { widget } = config
+      $('title').textContent = widget.title || 'Chat'
+      $('state').textContent = 'Assistant'
+      if (widget.avatarSrc) Object.assign($('avatar'), { src: widget.avatarSrc, hidden: false })
+      if (widget.themeColor && widget.themeColor.toLowerCase() !== '#ffffff') document.documentElement.style.setProperty('--accent', widget.themeColor)
+      if (widget.privacyPolicyHtml) { $('privacy').lastElementChild.innerHTML = DOMPurify.sanitize(widget.privacyPolicyHtml); $('privacy').hidden = false }
+      if (config.branding.required) { Object.assign($('branding').firstElementChild, { href: config.branding.url, textContent: config.branding.text }); $('branding').hidden = false }
+      $('attach').hidden = !config.features.fileUpload
+      $('input').maxLength = MAX_MESSAGE_LENGTH
+      renderActions()
+
+      const history = await chat.history()
+      if (history.length) history.forEach(renderHistory)
+      else welcome()
+      const status = await chat.liveChatStatus()
+      if (status && status.status !== 'closed') openLiveChat()
+    }
+
+    $('composer').onsubmit = (event) => { event.preventDefault(); submit($('input').value) }
+    $('stop').onclick = () => controller?.abort()
+    $('end-live').onclick = () => live?.end().catch(showError)
+    $('reset').onclick = () => {
+      chat.reset()
+      live = null
+      shown.clear()
+      $('messages').replaceChildren()
+      setLiveUi(false, 'Assistant')
+      welcome()
+    }
+    $('input').oninput = () => {
+      if (!live?.active) return
+      live.typing(true)
+      clearTimeout(typingTimer)
+      typingTimer = setTimeout(() => live?.typing(false), 1500)
+    }
+    $('attach').onclick = () => $('file').click()
+    $('file').onchange = async () => {
+      const file = $('file').files?.[0]
+      $('file').value = ''
+      if (!file) return
+      $('error').hidden = true
+      try {
+        if (live?.active) {
+          const sent = await live.upload(file)
+          addMessage('user', { file: sent, id: sent.messageId })
+        } else {
+          attachment = await chat.upload(file)
+          Object.assign($('attachment'), { textContent: `📎 ${attachment.name} will be sent with your next message`, hidden: false })
+        }
+      } catch (error) { showError(error) }
+    }
+
+    start().catch(showError)
+  </script>
+</body>
+</html>
