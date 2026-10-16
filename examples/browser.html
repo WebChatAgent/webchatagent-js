@@ -6,7 +6,7 @@
     npx serve .            (or: python3 -m http.server 8080)
     open http://localhost:3000/examples/browser.html?chatbotId=<your-chatbot-id>
 
-  Optional: &baseUrl=https://your-white-label-domain. Open it via http://localhost, not file://:
+  Optional: &baseUrl=https://your-white-label-domain, &language=en. Open it via http://localhost, not file://:
   the API checks where requests come from.
 -->
 <html lang="en">
@@ -15,53 +15,105 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>WebChatAgent SDK demo</title>
   <style>
-    :root { --accent: #2563eb; --bot: #f3f4f6; --line: #e5e7eb; --muted: #6b7280; font-family: system-ui, sans-serif; }
+    :root {
+      --accent: #4f46e5; --accent-2: #7c3aed; --surface: #fff; --soft: #f1f5f9; --line: #e2e8f0; --text: #0f172a; --muted: #64748b;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
     * { box-sizing: border-box; }
     [hidden] { display: none !important; }
-    body { margin: 0; background: #fafafa; color: #111827; }
-    .chat { display: flex; flex-direction: column; height: 100dvh; max-width: 720px; margin: 0 auto; background: #fff; border-inline: 1px solid var(--line); }
-    header { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
-    header img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
+    body {
+      margin: 0; min-height: 100dvh; display: grid; place-items: center; color: var(--text);
+      background: radial-gradient(900px 500px at 0% 0%, #c7d2fe 0, transparent 60%), radial-gradient(900px 500px at 100% 100%, #e9d5ff 0, transparent 60%), #f8fafc;
+    }
+    .chat { display: flex; flex-direction: column; width: 100%; height: 100dvh; max-width: 760px; background: var(--surface); }
+    @media (min-width: 800px) {
+      .chat { height: min(860px, calc(100dvh - 48px)); border-radius: 24px; overflow: hidden; box-shadow: 0 30px 80px -24px rgb(30 41 59 / .4), 0 0 0 1px rgb(15 23 42 / .06); }
+    }
+    header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+    header img, #avatar-fallback {
+      flex: none; width: 42px; height: 42px; border-radius: 50%; object-fit: cover; display: grid; place-items: center;
+      font-weight: 700; background: rgb(255 255 255 / .2); box-shadow: 0 0 0 2px rgb(255 255 255 / .45);
+    }
     header div { flex: 1; min-width: 0; }
-    h1 { font-size: 1rem; margin: 0; }
-    small, .meta { color: var(--muted); font-size: .75rem; }
-    button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 6px 10px; min-height: 36px; }
-    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    #messages { flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-    #messages > li { max-width: 85%; padding: 8px 12px; border-radius: 12px; overflow-wrap: anywhere; }
-    #messages > li.user { align-self: flex-end; background: var(--accent); color: #fff; }
+    h1 { font-size: 1.05rem; font-weight: 650; margin: 0; }
+    #state { display: flex; align-items: center; gap: 6px; font-size: .8rem; color: rgb(255 255 255 / .85); }
+    #state::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 0 3px rgb(74 222 128 / .3); }
+    button {
+      font: inherit; cursor: pointer; min-height: 36px; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--line);
+      background: #fff; color: var(--text); transition: border-color .15s, background .15s, transform .1s;
+    }
+    button:hover { border-color: var(--accent); }
+    button:active { transform: scale(.97); }
+    header button { color: #fff; background: rgb(255 255 255 / .14); border-color: rgb(255 255 255 / .35); }
+    header button:hover { background: rgb(255 255 255 / .24); border-color: #fff; }
+    .icon { width: 40px; height: 40px; min-height: 40px; padding: 0; display: grid; place-items: center; border-radius: 50%; }
+    .icon svg { width: 18px; height: 18px; }
+    #messages {
+      flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 24px 20px; display: flex; flex-direction: column; gap: 12px;
+      background: linear-gradient(var(--soft), var(--surface) 240px);
+    }
+    #messages > li { max-width: 82%; padding: 10px 14px; border-radius: 18px; line-height: 1.55; overflow-wrap: anywhere; animation: rise .25s ease-out; }
+    @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+    #messages > li.user {
+      align-self: flex-end; color: #fff; border-bottom-right-radius: 6px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 8px 18px -10px var(--accent);
+    }
     #messages > li.user a { color: inherit; }
     #messages > li.user.pending { opacity: .6; }
     #messages > li.user.failed { background: #b91c1c; }
-    #messages > li.bot, #messages > li.agent { align-self: flex-start; background: var(--bot); }
+    #messages > li.bot, #messages > li.agent {
+      align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-bottom-left-radius: 6px;
+      box-shadow: 0 6px 16px -12px rgb(15 23 42 / .35);
+    }
     #messages > li.agent { border-left: 3px solid #16a34a; }
-    #messages > li.system { align-self: center; background: none; color: var(--muted); font-size: .85rem; }
-    li p { margin: .25em 0; }
-    #messages ul, #messages ol { margin: .25em 0; padding-left: 20px; }
-    li img { max-width: 100%; border-radius: 8px; }
-    .sources { margin-top: 6px; font-size: .8rem; }
-    .rating { display: flex; gap: 4px; margin-top: 4px; }
-    .rating button { min-height: 28px; padding: 2px 8px; }
-    .rating button[aria-pressed="true"] { border-color: var(--accent); }
-    .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 8px; }
-    .notice { margin: 0; padding: 8px 16px; font-size: .85rem; background: #fffbeb; border-bottom: 1px solid var(--line); }
+    #messages > li.system { align-self: center; padding: 2px 10px; font-size: .8rem; color: var(--muted); }
+    li p { margin: .3em 0; }
+    #messages ul, #messages ol { margin: .3em 0; padding-left: 20px; }
+    li img { max-width: 100%; border-radius: 10px; }
+    #messages a { color: var(--accent); }
+    #messages code { padding: 1px 6px; border-radius: 6px; font-size: .85em; background: var(--soft); }
+    .meta { display: inline-block; margin-top: 8px; padding: 2px 8px; border-radius: 999px; font-size: .7rem; color: var(--muted); background: var(--soft); }
+    .sources a { display: inline-block; margin: 8px 6px 0 0; padding: 3px 10px; border-radius: 999px; font-size: .75rem; text-decoration: none; background: #eef2ff; }
+    .rating { display: flex; gap: 4px; margin-top: 8px; }
+    .rating button { min-height: 28px; padding: 2px 10px; font-size: .85rem; }
+    .rating button[aria-pressed="true"] { border-color: var(--accent); background: #eef2ff; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 20px 10px; }
+    .chips button { font-size: .85rem; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--accent) 6%, #fff); }
+    #attachment { color: var(--muted); font-size: .8rem; }
+    .notice { margin: 0; padding: 10px 20px; font-size: .8rem; color: var(--muted); background: var(--soft); border-bottom: 1px solid var(--line); }
+    .notice summary { cursor: pointer; }
     .notice.error { background: #fef2f2; color: #991b1b; }
-    #typing { margin: 0 16px 8px; }
-    #composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
-    #input { flex: 1; min-width: 0; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
-    footer { padding: 6px 16px 10px; text-align: center; font-size: .75rem; }
-    footer a { color: var(--muted); }
-    dialog { border: 1px solid var(--line); border-radius: 12px; width: min(420px, calc(100vw - 32px)); }
-    dialog label { display: block; margin: 0 0 10px; font-size: .9rem; }
-    dialog input:not([type=checkbox]), dialog select, dialog textarea { display: block; width: 100%; margin-top: 4px; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; }
-    dialog .invalid { border-color: #b91c1c !important; }
-    dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 0; margin: 12px 0 0; }
+    #typing { margin: 0 20px 8px; color: var(--muted); font-size: .8rem; }
+    .dots i { display: inline-block; width: 7px; height: 7px; margin-right: 4px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite both; }
+    .dots i:nth-child(2) { animation-delay: .2s; }
+    .dots i:nth-child(3) { animation-delay: .4s; }
+    @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+    #composer {
+      display: flex; align-items: center; gap: 6px; margin: 6px 16px 16px; padding: 6px; border: 1px solid var(--line); border-radius: 999px;
+      background: #fff; box-shadow: 0 10px 24px -18px rgb(15 23 42 / .5); transition: border-color .15s, box-shadow .15s;
+    }
+    #composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 15%, transparent); }
+    #input { flex: 1; min-width: 0; padding: 8px 10px; font: inherit; border: 0; outline: none; background: transparent; }
+    #send { border: 0; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+    #attach, #stop { border-color: transparent; color: var(--muted); }
+    footer { padding: 0 16px 12px; text-align: center; font-size: .75rem; }
+    footer a { color: var(--muted); text-decoration: none; }
+    dialog { border: 0; border-radius: 20px; width: min(420px, calc(100vw - 32px)); padding: 24px; box-shadow: 0 30px 80px -20px rgb(15 23 42 / .5); }
+    dialog::backdrop { background: rgb(15 23 42 / .35); backdrop-filter: blur(2px); }
+    dialog h2 { margin: 0 0 16px; font-size: 1.1rem; }
+    dialog label { display: block; margin: 0 0 12px; font-size: .9rem; }
+    dialog input:not([type=checkbox]), dialog select, dialog textarea {
+      display: block; width: 100%; margin-top: 4px; padding: 8px 10px; font: inherit; border: 1px solid var(--line); border-radius: 10px;
+    }
+    dialog menu { display: flex; justify-content: flex-end; gap: 8px; padding: 0; margin: 16px 0 0; }
+    button.primary { border: 0; color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
   </style>
 </head>
 <body>
   <main class="chat">
     <header>
       <img id="avatar" alt="" hidden>
+      <span id="avatar-fallback" aria-hidden="true">C</span>
       <div>
         <h1 id="title">Chat</h1>
         <small id="state">Loading…</small>
@@ -78,10 +130,16 @@
     <small id="attachment" class="chips" hidden></small>
     <form id="composer">
       <input id="file" type="file" hidden>
-      <button type="button" id="attach" aria-label="Attach a file" hidden>📎</button>
-      <input id="input" maxlength="700" placeholder="Type a message" autocomplete="off" aria-label="Message">
-      <button class="primary" id="send">Send</button>
-      <button type="button" id="stop" hidden>Stop</button>
+      <button type="button" id="attach" class="icon" aria-label="Attach a file" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+      </button>
+      <input id="input" maxlength="700" placeholder="Ask anything…" autocomplete="off" aria-label="Message">
+      <button type="button" id="stop" class="icon" aria-label="Stop" hidden>
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      </button>
+      <button id="send" class="icon" aria-label="Send">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
     </form>
     <footer id="branding" hidden><a target="_blank" rel="noopener"></a></footer>
   </main>
@@ -145,7 +203,7 @@
         list.className = 'sources'
         for (const s of links) {
           const url = new URL(s.source)
-          list.append(Object.assign(document.createElement('a'), { href: url.href, target: '_blank', rel: 'noopener', textContent: url.hostname + url.pathname }), document.createElement('br'))
+          list.append(Object.assign(document.createElement('a'), { href: url.href, target: '_blank', rel: 'noopener', textContent: url.hostname + url.pathname.replace(/\/$/, '') }))
         }
         li.append(list)
       }
@@ -218,7 +276,7 @@
       const options = attachment ? { attachment } : {}
       attachment = null
       $('attachment').hidden = true
-      const li = addMessage('bot', { text: '…' })
+      const li = addMessage('bot', { html: '<span class="dots" aria-label="Writing"><i></i><i></i><i></i></span>' })
       const body = li.firstChild
       let latest = null, frame = 0
       controller = new AbortController()
@@ -331,7 +389,12 @@
 
     async function start() {
       try {
-        chat = new WebChatAgent({ chatbotId: params.get('chatbotId') ?? '', baseUrl: params.get('baseUrl') ?? undefined, storage: localStorage })
+        chat = new WebChatAgent({
+          chatbotId: params.get('chatbotId') ?? '',
+          baseUrl: params.get('baseUrl') ?? undefined,
+          language: params.get('language') ?? undefined,
+          storage: localStorage,
+        })
       } catch (error) {
         $('state').textContent = 'Add ?chatbotId=<your chatbot ID> to the URL.'
         return showError(error)
@@ -342,8 +405,11 @@
       const { widget } = config
       $('title').textContent = widget.title || 'Chat'
       $('state').textContent = 'Assistant'
-      if (widget.avatarSrc) Object.assign($('avatar'), { src: widget.avatarSrc, hidden: false })
-      if (widget.themeColor && widget.themeColor.toLowerCase() !== '#ffffff') document.documentElement.style.setProperty('--accent', widget.themeColor)
+      $('avatar-fallback').textContent = (widget.title || 'Chat').trim().charAt(0).toUpperCase()
+      if (widget.avatarSrc) { Object.assign($('avatar'), { src: widget.avatarSrc, hidden: false }); $('avatar-fallback').hidden = true }
+      if (widget.themeColor && !/^#f{3}(f{3})?$/i.test(widget.themeColor)) {
+        for (const name of ['--accent', '--accent-2']) document.documentElement.style.setProperty(name, widget.themeColor)
+      }
       if (widget.privacyPolicyHtml) { $('privacy').lastElementChild.innerHTML = DOMPurify.sanitize(widget.privacyPolicyHtml); $('privacy').hidden = false }
       if (config.branding.required) { Object.assign($('branding').firstElementChild, { href: config.branding.url, textContent: config.branding.text }); $('branding').hidden = false }
       $('attach').hidden = !config.features.fileUpload

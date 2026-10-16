@@ -1,21 +1,86 @@
-# webchatagent
+<p align="center">
+  <a href="https://webchatagent.com"><img src="https://raw.githubusercontent.com/WebChatAgent/.github/main/profile/logo.png" width="88" alt="WebChatAgent"></a>
+</p>
 
-[![npm](https://img.shields.io/npm/v/webchatagent)](https://www.npmjs.com/package/webchatagent)
-[![CI](https://github.com/WebChatAgent/webchatagent-js/actions/workflows/ci.yml/badge.svg)](https://github.com/WebChatAgent/webchatagent-js/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/webchatagent)](LICENSE)
+<h1 align="center">webchatagent</h1>
 
-Typed client for the [WebChatAgent](https://webchatagent.com) chat API. Use it to build your own chat UI on top of your WebChatAgent chatbot, with the same knowledge and settings as the ready-made widget:
+<p align="center">
+  <b>Build your own AI chat in minutes, powered by your WebChatAgent chatbot.</b><br>
+  Streaming answers with sources, file upload, lead forms and live handover to your team.<br>
+  One typed package. Zero dependencies. Your design.
+</p>
 
-- answers as a whole or streamed word by word
-- suggested follow-up questions and sources
-- file upload, thumbs up/down feedback, lead forms
-- handover to a human team member with real-time live chat
+<p align="center">
+  <a href="https://www.npmjs.com/package/webchatagent"><img src="https://img.shields.io/npm/v/webchatagent?color=4f46e5&label=npm" alt="npm version"></a>
+  <a href="https://github.com/WebChatAgent/webchatagent-js/actions/workflows/ci.yml"><img src="https://github.com/WebChatAgent/webchatagent-js/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/types-TypeScript-3178c6?logo=typescript&logoColor=white" alt="TypeScript">
+  <img src="https://img.shields.io/badge/dependencies-0-16a34a" alt="zero dependencies">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-64748b" alt="MIT license"></a>
+</p>
 
-Zero dependencies, ESM, strict TypeScript types with documentation on every export. Runs in browsers, Node.js 22.12+, Bun and Deno.
+<p align="center">
+  <a href="https://webchatagent.com/register"><b>Create your chatbot</b></a> ·
+  <a href="https://docs.webchatagent.com/developer-guide/javascript-sdk">Docs</a> ·
+  <a href="examples/browser.html">Demo source</a> ·
+  <a href="https://webchatagent.com/chatbot-api-integration">Chatbot API</a>
+</p>
 
-> Only need a chat on your website? The [embed code](https://docs.webchatagent.com/developer-guide/widget-embed) is quicker. This package is for custom interfaces: your own design, a React or Vue app, a native shell, a server-side integration.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/WebChatAgent/webchatagent-js/main/.github/assets/demo.png" width="760" alt="A custom chat UI built with webchatagent: streamed answer, follow-up suggestions, AI label, feedback and handover button">
+  <br><sub>A complete chat in one HTML file with this package, no framework: <a href="examples/browser.html">examples/browser.html</a></sub>
+</p>
 
-## Contents
+---
+
+## Why webchatagent?
+
+Your chatbot already knows your website, PDFs and help articles. It books appointments, searches products and hands tough questions to your team. This package puts all of that behind a few typed function calls, so you can ship it in **your** interface instead of a widget.
+
+| | |
+|---|---|
+| ⚡ **Streaming in five lines** | Answers appear word by word, already cleaned for display. Stop button included. |
+| 🧑‍💼 **Human handover built in** | When the bot hands over, your team answers live. Reconnects and missed messages are handled for you. |
+| 📎 **Files, leads, feedback** | Visitors send invoices or photos, fill your lead forms, rate answers. Everything lands in your dashboard. |
+| 🔗 **Sources and follow-ups** | Every answer comes with the pages it used and suggested next questions. |
+| 🧩 **Works everywhere** | React, Vue, Svelte, plain HTML, Node.js, Bun, Deno. ESM, no dependencies. |
+| 🤖 **Ready for AI coding agents** | Claude Code, Cursor or Copilot get [rules and a skeleton](#for-ai-coding-agents) to build your chat right. |
+
+## Start in 30 seconds
+
+**1.** [Create a chatbot](https://webchatagent.com/register) and point it at your website. 14-day free trial, no credit card.
+
+**2.** Install the package:
+
+```sh
+npm install webchatagent
+```
+
+**3.** Talk to your bot:
+
+```ts
+import { WebChatAgent } from 'webchatagent'
+
+const chat = new WebChatAgent({ chatbotId: 'YOUR-CHATBOT-ID', storage: localStorage })
+
+for await (const event of chat.stream('Do you ship to Austria?')) {
+  if (event.type === 'text') bubble.innerHTML = render(event.text) // Markdown, streamed
+  if (event.type === 'done') showSuggestions(event.reply.suggestions)
+}
+```
+
+That's it. Same knowledge, tools and settings as your website widget, in your own UI.
+
+## What you can build
+
+- **In-app support** in your SaaS, styled like the rest of your product, with handover to your support team
+- **A help center search box** that answers in full sentences and links the source pages
+- **Shop assistants** that find products and collect leads in your own checkout flow
+- **Kiosk, POS or internal tools** where a floating widget doesn't fit
+- **Server-side bridges** from Node.js, for example a Slack or Discord bot that asks your chatbot
+
+> Only need a chat bubble on your website? The [embed code](https://docs.webchatagent.com/developer-guide/widget-embed) is even quicker. Use this package when you want full control over the interface.
+
+## Guide
 
 - [Install](#install)
 - [Quick start](#quick-start)
@@ -518,3 +583,11 @@ Questions and bugs: [GitHub issues](https://github.com/WebChatAgent/webchatagent
 ## License
 
 [MIT](LICENSE)
+
+---
+
+<p align="center">
+  <a href="https://webchatagent.com"><img src="https://raw.githubusercontent.com/WebChatAgent/.github/main/profile/logo.png" width="40" alt="WebChatAgent"></a><br>
+  <b><a href="https://webchatagent.com">WebChatAgent</a></b>: AI chatbot and phone assistant for business websites. Hosted in Germany.<br>
+  <a href="https://webchatagent.com/register">Start free</a> · <a href="https://webchatagent.com/pricing">Pricing</a> · <a href="https://docs.webchatagent.com">Docs</a> · <a href="https://github.com/WebChatAgent">More integrations</a>
+</p>
