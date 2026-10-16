@@ -1,6 +1,6 @@
 {
   "name": "webchatagent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Typed client for the WebChatAgent chat API. Build your own chat UI with streaming, file upload, feedback, lead forms and human handover.",
   "keywords": [
     "webchatagent",

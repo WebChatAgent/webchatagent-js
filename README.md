@@ -242,7 +242,7 @@ function openLiveChat() {
 }
 ```
 
-The connection reconnects by itself (3 s, then up to 30 s apart). Messages the team member sent while the visitor was offline arrive as `message` events after the reconnect, so you never need to merge `history()` yourself.
+The connection sends a small ping every 45 s so proxies keep it open, and reconnects by itself (3 s, then up to 30 s apart). Messages the team member sent while the visitor was offline arrive as `message` events after the reconnect, so you never need to merge `history()` yourself.
 
 **3. Talk** while `live.canSend` is true (status `waiting` or `open`). Messages go through the live chat, not `send()`:
 

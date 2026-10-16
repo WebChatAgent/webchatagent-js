@@ -209,4 +209,16 @@ describe('LiveChat', () => {
     FakeWebSocket.last.receive({ type: 'livechat:message', id: 3, sender: 'admin', content: 'Are you still there?', createdAt: '2026-10-16T10:00:00.000Z' })
     expect(events.filter(([name]) => name === 'message')).toHaveLength(1)
   })
+
+  it('keeps the connection alive with a ping', () => {
+    vi.useFakeTimers()
+    const { live, socket } = setup()
+    join(socket, 'open')
+    vi.advanceTimersByTime(45000)
+    expect(socket.sent.at(-1)).toEqual({ type: 'client:ping', chatbotId: CHATBOT_ID, sessionId: SESSION_ID })
+    live.close()
+    const sent = socket.sent.length
+    vi.advanceTimersByTime(90000)
+    expect(socket.sent).toHaveLength(sent)
+  })
 })

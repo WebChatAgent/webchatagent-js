@@ -50,6 +50,8 @@ const OPEN = 1
 const RECONNECT_BASE_MS = 3000
 const RECONNECT_MAX_MS = 30000
 const ECHO_TIMEOUT_MS = 15000
+/** Proxies in front of the API drop idle WebSockets after about two minutes. */
+const HEARTBEAT_MS = 45000
 
 /**
  * Real-time chat with a human team member. Create it with `chat.liveChat()`.
@@ -72,6 +74,7 @@ export class LiveChat {
   }
   #socket: WebSocketLike | null = null
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  #heartbeat: ReturnType<typeof setInterval> | undefined
   #reconnectAttempts = 0
   #pending: PendingEcho[] = []
   #status: LiveChatState | null = null
@@ -194,6 +197,8 @@ export class LiveChat {
     }
     this.#socket = socket
     socket.onopen = () => {
+      clearInterval(this.#heartbeat)
+      this.#heartbeat = setInterval(() => this.#sendFrame({ type: 'client:ping' }), HEARTBEAT_MS) // ignored by the server
       this.#sendFrame({ type: 'client:join', as: 'user', lang: this.#ctx.language })
       this.#sendFrame({
         type: 'client:meta',
@@ -208,6 +213,7 @@ export class LiveChat {
     socket.onerror = () => undefined // a close event follows
     socket.onclose = () => {
       if (this.#socket !== socket) return
+      clearInterval(this.#heartbeat)
       this.#socket = null
       this.#ready = false
       this.#typing = false
@@ -319,6 +325,7 @@ export class LiveChat {
 
   #shutdown(): void {
     clearTimeout(this.#reconnectTimer)
+    clearInterval(this.#heartbeat)
     const error = new WebChatAgentError('The live chat is no longer active.', { code: 'LIVE_CHAT_INACTIVE' })
     for (const pending of this.#pending) {
       clearTimeout(pending.timer)
