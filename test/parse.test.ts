@@ -119,6 +119,8 @@ describe('helpers', () => {
         { type: 'file', source: '/api/ai-chat/upload/u1', data: { name: 'a.pdf', mimeType: 'application/pdf', size: 3, isImage: false, uploadId: 'u1' } },
         { type: 'fileSource', source: 'r1', data: { name: 'Handbook.docx', provider: 'sharepoint' } },
         { type: 'unknown' },
+        { type: 'web', source: 'javascript:alert(1)' },
+        { type: 'file', source: 'javascript:alert(1)', data: { name: 'x', uploadId: 'u2' } },
       ],
       'https://webchatagent.com',
     )

@@ -131,12 +131,14 @@ export function toIsoDate(value: unknown): string {
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString()
 }
 
+/** Resolves `url` against `base`. Anything but http(s) (e.g. `javascript:`) becomes `''`, so it is safe for `href`/`src`. */
 export function absoluteUrl(url: string, base: string): string {
-  if (!url) return url
+  if (!url) return ''
   try {
-    return new URL(url, base).href
+    const resolved = new URL(url, base)
+    return resolved.protocol === 'https:' || resolved.protocol === 'http:' ? resolved.href : ''
   } catch {
-    return url
+    return ''
   }
 }
 
@@ -160,15 +162,17 @@ export function parseSources(value: unknown, base: string): Source[] {
     const source = asString(item['source'])
     const data = item['data']
     switch (item['type']) {
-      case 'web':
-        return source ? [{ type: 'web', source }] : []
+      case 'web': {
+        const url = absoluteUrl(source, base)
+        return url ? [{ type: 'web', source: url }] : []
+      }
       case 'product':
         return [isObject(data) ? { type: 'product', source, data: productData(data) } : { type: 'product', source }]
       case 'fileSource':
         return [isObject(data) ? { type: 'fileSource', source, data: fileSourceData(data) } : { type: 'fileSource', source }]
       case 'file': {
         const url = absoluteUrl(source, base)
-        const file = parseFile(isObject(data) ? { ...data, url } : null, base)
+        const file = url ? parseFile(isObject(data) ? { ...data, url } : null, base) : null
         return file ? [{ type: 'file', source: url, data: file }] : []
       }
       default:

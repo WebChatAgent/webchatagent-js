@@ -74,7 +74,7 @@ export interface ChatFile {
   mimeType: string
   /** Size in bytes. */
   size: number
-  /** Absolute download URL. */
+  /** Absolute http(s) download URL, safe for `href` and `src`. */
   url: string
   isImage: boolean
 }
