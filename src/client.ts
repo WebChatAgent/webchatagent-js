@@ -1,21 +1,30 @@
 import { WebChatAgentError } from './errors.js'
 import { LiveChat } from './live-chat.js'
 import {
+  absoluteUrl,
+  ACTION_BAR_TYPES,
   asString,
+  browserLanguage,
   cleanStreamingText,
-  errorMessage,
+  currentPageUrl,
+  errorInfo,
   extractSuggestions,
+  FORM_FIELD_TYPES,
   isObject,
   isUuid,
+  messageContent,
   parseFile,
+  parseJson,
   parseSources,
   randomUuid,
   readSseFrames,
-  systemEvent,
+  toChatMode,
   toIsoDate,
+  toLiveChatState,
   type JsonObject,
 } from './parse.js'
 import type {
+  ActionBarItem,
   ChatbotConfig,
   ChatMode,
   ChatReply,
@@ -23,7 +32,6 @@ import type {
   FetchLike,
   Form,
   FormField,
-  FormFieldType,
   FormValues,
   HistoryMessage,
   LiveChatState,
@@ -44,7 +52,14 @@ export const MAX_MESSAGE_LENGTH = 700
 
 const DEFAULT_BASE_URL = 'https://webchatagent.com'
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const FIELD_TYPES: readonly FormFieldType[] = ['text', 'email', 'tel', 'textarea', 'select', 'checkbox', 'number', 'info']
+/** Widget settings holding image URLs; uploaded images are stored relative to the API origin. */
+const IMAGE_SETTINGS = ['avatarSrc', 'welcomeImage', 'chatBubbleImage'] as const
+
+interface PostOptions {
+  accept?: string
+  headers?: Record<string, string>
+  signal?: AbortSignal | undefined
+}
 
 /**
  * Client for one chatbot and one conversation (session).
@@ -80,8 +95,7 @@ export class WebChatAgent {
     this.#storage = options.storage
     this.#language = options.language
     this.#WebSocket = options.WebSocket
-    this.#sessionId = options.sessionId
-    if (this.#sessionId) this.#saveSession(this.#sessionId)
+    if (options.sessionId) this.#useSession(options.sessionId)
   }
 
   /**
@@ -89,8 +103,7 @@ export class WebChatAgent {
    * can read the conversation.
    */
   get sessionId(): string {
-    this.#sessionId ??= this.#loadSession()
-    return this.#sessionId
+    return (this.#sessionId ??= this.#loadSession())
   }
 
   /**
@@ -129,28 +142,19 @@ export class WebChatAgent {
     let shown = ''
     let lastError: string | null = null
     for await (const frame of readSseFrames(response.body)) {
-      switch (frame['type']) {
-        case 'token': {
-          raw += asString(frame['data'])
-          const text = cleanStreamingText(raw)
-          if (text === shown) break
-          const delta = text.startsWith(shown) ? text.slice(shown.length) : ''
-          shown = text
-          yield { type: 'text', text, delta }
-          break
-        }
-        case 'tool_call':
-          yield { type: 'tool', name: asString(frame['name']) }
-          break
-        case 'error':
-          lastError = asString(frame['data'], 'Unknown error')
-          yield { type: 'error', message: lastError }
-          break
-        case 'done':
-          yield { type: 'done', reply: this.#toReply(frame, message) }
-          return
-        default:
-          break
+      if (frame['type'] === 'token') {
+        raw += asString(frame['data'])
+        const text = cleanStreamingText(raw)
+        if (text === shown) continue
+        const delta = text.startsWith(shown) ? text.slice(shown.length) : ''
+        shown = text
+        yield { type: 'text', text, delta }
+      } else if (frame['type'] === 'error') {
+        lastError = asString(frame['data'], 'Unknown error')
+        yield { type: 'error', message: lastError }
+      } else if (frame['type'] === 'done') {
+        yield { type: 'done', reply: this.#toReply(frame, message) }
+        return
       }
     }
     throw new WebChatAgentError(lastError ?? 'The answer stream ended before it was complete.', {
@@ -161,10 +165,9 @@ export class WebChatAgent {
 
   /** Messages of the current conversation, oldest first. Empty for new or expired (30 days) conversations. */
   async history(): Promise<HistoryMessage[]> {
-    const query = new URLSearchParams({ chatbotId: this.chatbotId, sessionId: this.sessionId })
     let body: JsonObject
     try {
-      body = await this.#getJson(`/api/chat/history?${query.toString()}`)
+      body = await this.#getJson(`/api/chat/history?${this.#query()}`)
     } catch (error) {
       if (error instanceof WebChatAgentError && error.status === 410) return []
       throw error
@@ -183,8 +186,8 @@ export class WebChatAgent {
    */
   async getConfig(): Promise<ChatbotConfig> {
     const body = await this.#getJson(`/api/chatbots/${encodeURIComponent(this.chatbotId)}/public`)
-    const widget = toWidgetSettings(body['widgetProperties'])
-    const inlineWidget = toWidgetSettings(body['embeddedWidgetProperties'])
+    const widget = toWidgetSettings(body['widgetProperties'], this.baseUrl)
+    const inlineWidget = toWidgetSettings(body['embeddedWidgetProperties'], this.baseUrl)
     return {
       archived: body['archived'] === true,
       widget,
@@ -201,7 +204,7 @@ export class WebChatAgent {
       branding: {
         required: body['canHideBranding'] !== true,
         text: asString(body['poweredByText'], 'Powered by WebChatAgent'),
-        url: asString(body['poweredByUrl'], DEFAULT_BASE_URL),
+        url: absoluteUrl(asString(body['poweredByUrl']), this.baseUrl) || DEFAULT_BASE_URL,
       },
     }
   }
@@ -209,13 +212,14 @@ export class WebChatAgent {
   /**
    * Upload a file (max 2 MB; images, PDF, TXT, CSV, DOCX, XLS, XLSX) for the bot to read.
    * Then send it with `send(text, { attachment })`. Requires `config.features.fileUpload`.
+   * Pass `name` for a plain `Blob`: the server checks the file extension.
    *
    * @example
    * const attachment = await chat.upload(input.files[0])
    * const reply = await chat.send('What does this invoice say?', { attachment })
    */
   async upload(file: Blob, name?: string): Promise<UploadedFile> {
-    return this.#uploadTo('/api/ai-chat/upload', file, name, {})
+    return this.#uploadTo('/api/ai-chat/upload', file, name, false)
   }
 
   /**
@@ -223,17 +227,14 @@ export class WebChatAgent {
    * Requires `config.features.feedback`.
    */
   async feedback(message: ChatReply | HistoryMessage, rating: 'up' | 'down'): Promise<void> {
-    const pageUrl = currentPageUrl()
-    const language = this.#visitorLanguage()
     await this.#postJson('/api/feedback/thumb', {
-      chatbotId: this.chatbotId,
-      sessionId: this.sessionId,
+      ...this.#ids(),
       messageId: String(message.id),
       rating,
       answer: message.text.slice(0, 10000),
-      ...('question' in message ? { question: message.question.slice(0, 2000) } : {}),
-      ...(language ? { language: language.slice(0, 10) } : {}),
-      ...(pageUrl ? { pageUrl: pageUrl.slice(0, 2048) } : {}),
+      question: 'question' in message ? message.question.slice(0, 2000) : undefined,
+      language: this.#visitorLanguage()?.slice(0, 10),
+      pageUrl: currentPageUrl()?.slice(0, 2048),
     })
   }
 
@@ -267,13 +268,7 @@ export class WebChatAgent {
         return isEmptyValue(value) ? [] : [[field.label, value]]
       }),
     )
-    await this.#postJson('/api/leads/form-submit', {
-      chatbotId: this.chatbotId,
-      sessionId: this.sessionId,
-      formId: form.id,
-      formName: form.name,
-      data,
-    })
+    await this.#postJson('/api/leads/form-submit', { ...this.#ids(), formId: form.id, formName: form.name, data })
   }
 
   /**
@@ -281,15 +276,14 @@ export class WebChatAgent {
    * The bot can also hand over by itself, then a reply has `mode: 'human'`.
    */
   async requestHuman(options: RequestHumanOptions = {}): Promise<RequestHumanResult> {
-    const language = this.#visitorLanguage()
     const body = await this.#postJson(
       '/api/livechats/request',
       {
         chatbotId: this.chatbotId,
-        ...(options.name ? { name: options.name } : {}),
-        ...(options.email ? { email: options.email } : {}),
-        ...(options.reason ? { reason: options.reason } : {}),
-        ...(language ? { userLanguage: language } : {}),
+        name: options.name || undefined,
+        email: options.email || undefined,
+        reason: options.reason || undefined,
+        userLanguage: this.#visitorLanguage(),
       },
       { 'X-Chat-Session-Id': this.sessionId },
     )
@@ -302,16 +296,15 @@ export class WebChatAgent {
    * Use it after a page reload to resume: if `status` is `waiting` or `open`, call `liveChat()`.
    */
   async liveChatStatus(): Promise<{ status: LiveChatState; mode: ChatMode } | null> {
-    const query = new URLSearchParams({ chatbotId: this.chatbotId, sessionId: this.sessionId })
-    const body = await this.#getJson(`/api/livechats/status?${query.toString()}`)
-    const status = body['status']
-    if (body['exists'] !== true || (status !== 'waiting' && status !== 'open' && status !== 'closed')) return null
-    return { status, mode: body['mode'] === 'human' ? 'human' : 'bot' }
+    const body = await this.#getJson(`/api/livechats/status?${this.#query()}`)
+    const status = toLiveChatState(body['status'])
+    return body['exists'] === true && status ? { status, mode: toChatMode(body['mode']) } : null
   }
 
   /**
    * Connect to the live chat of the current conversation. Returns the existing
-   * connection while it is active. Reconnects automatically.
+   * connection while it is active. Reconnects automatically and delivers messages
+   * missed while disconnected.
    */
   liveChat(): LiveChat {
     if (this.#liveChat?.active) return this.#liveChat
@@ -321,18 +314,18 @@ export class WebChatAgent {
     }
     const url = new URL('/api/livechat', this.baseUrl)
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-    const sessionId = this.sessionId
+    const ids = this.#ids()
     this.#liveChat = new LiveChat({
+      ...ids,
       url: url.href,
       baseUrl: this.baseUrl,
-      chatbotId: this.chatbotId,
-      sessionId,
       language: this.#visitorLanguage(),
       WebSocket: WebSocketImpl,
+      history: () => this.history(),
       end: async () => {
-        await this.#postJson('/api/livechats/end', { chatbotId: this.chatbotId, sessionId })
+        await this.#postJson('/api/livechats/end', ids)
       },
-      upload: (file, name) => this.#uploadTo('/api/livechat/upload', file, name, { as: 'user' }),
+      upload: (file, name) => this.#uploadTo('/api/livechat/upload', file, name, true),
     })
     return this.#liveChat
   }
@@ -341,11 +334,18 @@ export class WebChatAgent {
   reset(): void {
     this.#liveChat?.close()
     this.#liveChat = null
-    this.#sessionId = randomUuid()
-    this.#saveSession(this.#sessionId)
+    this.#useSession(randomUuid())
   }
 
   // --- internals ---
+
+  #ids(): { chatbotId: string; sessionId: string } {
+    return { chatbotId: this.chatbotId, sessionId: this.sessionId }
+  }
+
+  #query(): string {
+    return new URLSearchParams(this.#ids()).toString()
+  }
 
   get #storageKey(): string {
     return `webchatagent:session:${this.chatbotId}`
@@ -358,22 +358,21 @@ export class WebChatAgent {
     } catch {
       // Storage blocked (private mode, sandboxed iframe): keep the session in memory.
     }
-    if (isUuid(stored)) return stored
-    const id = randomUuid()
-    this.#saveSession(id)
-    return id
+    return isUuid(stored) ? stored : this.#useSession(randomUuid())
   }
 
-  #saveSession(id: string): void {
+  #useSession(id: string): string {
+    this.#sessionId = id
     try {
       this.#storage?.setItem(this.#storageKey, id)
     } catch {
       // see #loadSession
     }
+    return id
   }
 
   #visitorLanguage(): string | undefined {
-    return this.#language ?? (typeof navigator === 'undefined' ? undefined : navigator.language || undefined)
+    return this.#language ?? browserLanguage()
   }
 
   async #postChat(message: string, options: SendOptions, stream: boolean): Promise<Response> {
@@ -383,30 +382,24 @@ export class WebChatAgent {
     if (!message.trim() && !options.attachment) {
       throw new WebChatAgentError('Message is empty.', { code: 'INVALID_INPUT' })
     }
-    const pageUrl = options.pageUrl ?? currentPageUrl()
-    const response = await this.#request('/api/chat', {
-      method: 'POST',
-      headers: this.#headers({
-        'Content-Type': 'application/json',
-        Accept: stream ? 'text/event-stream' : 'application/json',
-        'X-Chat-Session-Id': this.sessionId,
-      }),
-      body: JSON.stringify({
+    const { attachment } = options
+    const response = await this.#post(
+      '/api/chat',
+      {
         message,
         chatbotId: this.chatbotId,
-        ...(pageUrl ? { pageUrl } : {}),
-        ...(options.contextData ? { contextData: options.contextData } : {}),
-        ...(options.attachment
-          ? { attachment: { uploadId: options.attachment.uploadId, messageId: options.attachment.messageId } }
-          : {}),
-      }),
-      signal: options.signal ?? null,
-    })
+        pageUrl: options.pageUrl ?? currentPageUrl(),
+        contextData: options.contextData,
+        attachment: attachment && { uploadId: attachment.uploadId, messageId: attachment.messageId },
+      },
+      {
+        accept: stream ? 'text/event-stream' : 'application/json',
+        headers: { 'X-Chat-Session-Id': this.sessionId },
+        signal: options.signal,
+      },
+    )
     const serverSession = response.headers.get('x-chat-session-id')
-    if (isUuid(serverSession) && serverSession !== this.#sessionId) {
-      this.#sessionId = serverSession
-      this.#saveSession(serverSession)
-    }
+    if (isUuid(serverSession) && serverSession !== this.#sessionId) this.#useSession(serverSession)
     return response
   }
 
@@ -414,7 +407,6 @@ export class WebChatAgent {
     const aiGenerated = body['aiGenerated'] === true
     // While a team member handles the chat the server answers without `aiGenerated`.
     const human = body['mode'] === 'human' || !aiGenerated
-    const status = body['status']
     const { text, suggestions } = extractSuggestions(asString(body['reply']))
     return {
       id: randomUuid(),
@@ -423,13 +415,7 @@ export class WebChatAgent {
       sources: parseSources(body['sources'], this.baseUrl),
       suggestions,
       mode: human ? 'human' : 'bot',
-      status: !human
-        ? null
-        : status === 'waiting' || status === 'open' || status === 'closed'
-          ? status
-          : body['_liveChatOpen'] === true
-            ? 'open'
-            : 'waiting',
+      status: human ? (toLiveChatState(body['status']) ?? (body['_liveChatOpen'] === true ? 'open' : 'waiting')) : null,
       aiGenerated,
       conversationTooLong: body['conversationTooLong'] === true,
       attachmentTruncated: body['attachmentTruncated'] === true,
@@ -439,28 +425,31 @@ export class WebChatAgent {
   #toHistoryMessage(row: JsonObject): HistoryMessage {
     const role: MessageRole =
       row['role'] === 'user' ? 'user' : row['role'] === 'system' ? 'system' : row['isAgent'] === true ? 'agent' : 'assistant'
+    const sources = parseSources(row['sources'], this.baseUrl)
+    const file = sources.find((source) => source.type === 'file')?.data ?? null
     const raw = asString(row['text'])
-    const event = role === 'system' ? systemEvent(raw) : null
-    const { text, suggestions } = role === 'assistant' ? extractSuggestions(raw) : { text: event ? '' : raw, suggestions: [] }
+    const content = messageContent(role, raw, file)
+    const { text, suggestions } = role === 'assistant' ? extractSuggestions(raw) : { text: content.text, suggestions: [] }
     return {
       id: typeof row['id'] === 'number' ? row['id'] : Number(row['id']),
       role,
       text,
-      sources: parseSources(row['sources'], this.baseUrl),
+      file,
+      sources,
       suggestions,
-      event,
+      event: content.event,
       createdAt: toIsoDate(row['createdAt']),
     }
   }
 
-  async #uploadTo(path: string, file: Blob, name: string | undefined, extra: Record<string, string>): Promise<UploadedFile> {
+  async #uploadTo(path: string, file: Blob, name: string | undefined, asUser: boolean): Promise<UploadedFile> {
     const form = new FormData()
     form.append('file', file, name ?? fileName(file))
     form.append('chatbotId', this.chatbotId)
     form.append('sessionId', this.sessionId)
     const language = this.#visitorLanguage()
     if (language) form.append('lang', language)
-    for (const [key, value] of Object.entries(extra)) form.append(key, value)
+    if (asUser) form.append('as', 'user')
     const response = await this.#request(path, { method: 'POST', headers: this.#headers({}), body: form })
     const body = await readJson(response)
     const uploaded = parseFile(body['file'], this.baseUrl)
@@ -479,13 +468,18 @@ export class WebChatAgent {
     return readJson(await this.#request(path, { method: 'GET', headers: this.#headers({ Accept: 'application/json' }) }))
   }
 
-  async #postJson(path: string, body: JsonObject, headers: Record<string, string> = {}): Promise<JsonObject> {
-    const response = await this.#request(path, {
+  /** POST a JSON body. `undefined` fields are dropped by `JSON.stringify`. */
+  async #post(path: string, body: JsonObject, options: PostOptions = {}): Promise<Response> {
+    return this.#request(path, {
       method: 'POST',
-      headers: this.#headers({ 'Content-Type': 'application/json', Accept: 'application/json', ...headers }),
+      headers: this.#headers({ 'Content-Type': 'application/json', Accept: options.accept ?? 'application/json', ...options.headers }),
       body: JSON.stringify(body),
+      signal: options.signal ?? null,
     })
-    return readJson(response)
+  }
+
+  async #postJson(path: string, body: JsonObject, headers: Record<string, string> = {}): Promise<JsonObject> {
+    return readJson(await this.#post(path, body, { headers }))
   }
 
   async #request(path: string, init: RequestInit): Promise<Response> {
@@ -518,24 +512,15 @@ function parseBaseUrl(value: string): string {
 }
 
 async function readJson(response: Response): Promise<JsonObject> {
-  const body: unknown = await response.json().catch(() => null)
+  const body = parseJson(await response.text().catch(() => ''))
   return isObject(body) ? body : {}
 }
 
 async function toHttpError(response: Response): Promise<WebChatAgentError> {
   const text = await response.text().catch(() => '')
-  let body: unknown = text
-  try {
-    body = JSON.parse(text)
-  } catch {
-    // not JSON, keep the text
-  }
-  const serverCode = isObject(body) ? body['code'] : undefined
-  return new WebChatAgentError(errorMessage(body, response.status), {
-    code: serverCode === 'FILE_TOO_LARGE' || serverCode === 'UNSUPPORTED_TYPE' ? serverCode : 'HTTP',
-    status: response.status,
-    body,
-  })
+  const body = parseJson(text) ?? text
+  const { code, message } = errorInfo(body, response.status)
+  return new WebChatAgentError(message, { code, status: response.status, body })
 }
 
 function isAbortError(error: unknown): boolean {
@@ -546,21 +531,43 @@ function isEmptyValue(value: unknown): boolean {
   return value === undefined || value === '' || value === false
 }
 
-function currentPageUrl(): string | undefined {
-  return typeof location === 'undefined' ? undefined : location.href
-}
-
 function fileName(file: Blob): string {
   return 'name' in file && typeof file.name === 'string' && file.name ? file.name : 'upload'
 }
 
-function toWidgetSettings(value: unknown): WidgetSettings {
+function toWidgetSettings(value: unknown, baseUrl: string): WidgetSettings {
   if (!isObject(value)) return {}
-  // ponytail: dashboard-written JSON is trusted; only the fields the SDK computes with are normalized.
+  // ponytail: dashboard-written JSON is trusted; only fields the SDK computes with or that hold URLs are normalized.
   const settings: WidgetSettings = { ...value }
+  for (const key of IMAGE_SETTINGS) {
+    if (typeof value[key] === 'string') settings[key] = absoluteUrl(value[key], baseUrl)
+  }
   if ('promptButtons' in value) settings.promptButtons = toPromptButtons(value['promptButtons'])
   if ('forms' in value) settings.forms = Array.isArray(value['forms']) ? value['forms'].flatMap(toForm) : []
+  const bar = value['actionBar']
+  if (isObject(bar) && Array.isArray(bar['items'])) {
+    settings.actionBar = {
+      enabled: bar['enabled'] === true,
+      items: bar['items'].filter(isObject).flatMap((item) => toActionBarItem(item, baseUrl)),
+    }
+  }
   return settings
+}
+
+function toActionBarItem(item: JsonObject, baseUrl: string): ActionBarItem[] {
+  const type = ACTION_BAR_TYPES.find((t) => t === item['type'])
+  if (typeof item['id'] !== 'string' || !type) return []
+  const result: ActionBarItem = { id: item['id'], type, label: asString(item['label']) }
+  for (const key of ['icon', 'phoneNumber', 'formId'] as const) {
+    const value = item[key]
+    if (typeof value === 'string') result[key] = value
+  }
+  for (const key of ['iconOnly', 'openInNewTab'] as const) {
+    const value = item[key]
+    if (typeof value === 'boolean') result[key] = value
+  }
+  if (typeof item['url'] === 'string') result.url = absoluteUrl(item['url'], baseUrl)
+  return [result]
 }
 
 function toPromptButtons(value: unknown): PromptButton[] {
@@ -584,7 +591,7 @@ function toForm(value: unknown): Form[] {
 
 function toFormField(value: unknown): FormField[] {
   if (!isObject(value) || typeof value['id'] !== 'string') return []
-  const type = FIELD_TYPES.find((t) => t === value['type']) ?? 'text'
+  const type = FORM_FIELD_TYPES.find((t) => t === value['type']) ?? 'text'
   const field: FormField = { id: value['id'], type, label: asString(value['label']), required: value['required'] === true }
   if (typeof value['placeholder'] === 'string') field.placeholder = value['placeholder']
   if (Array.isArray(value['options'])) field.options = value['options'].filter((o): o is string => typeof o === 'string')
@@ -593,10 +600,8 @@ function toFormField(value: unknown): FormField[] {
 
 /** Forms the server accepts: listed by an item of the enabled Action Bar. */
 function activeForms(widget: WidgetSettings): Form[] {
-  const bar = widget['actionBar']
-  if (!isObject(bar) || bar['enabled'] !== true || !Array.isArray(bar['items'])) return []
-  const formIds = new Set(
-    bar['items'].filter(isObject).flatMap((item) => (item['type'] === 'form' && typeof item['formId'] === 'string' ? [item['formId']] : [])),
-  )
+  const bar = widget.actionBar
+  if (!bar?.enabled) return []
+  const formIds = new Set(bar.items.flatMap((item) => (item.type === 'form' && item.formId ? [item.formId] : [])))
   return (widget.forms ?? []).filter((form) => formIds.has(form.id) && form.name.trim() !== '')
 }

@@ -1,7 +1,20 @@
 import { WebChatAgentError } from './errors.js'
-import { asString, isObject, parseFile, systemEvent, toIsoDate, type JsonObject } from './parse.js'
+import {
+  asString,
+  browserLanguage,
+  currentPageUrl,
+  isObject,
+  messageContent,
+  parseFile,
+  parseJson,
+  toChatMode,
+  toEndReason,
+  toIsoDate,
+  toLiveChatState,
+  type JsonObject,
+} from './parse.js'
 import type {
-  ChatMode,
+  HistoryMessage,
   LiveChatEndReason,
   LiveChatEvents,
   LiveChatMessage,
@@ -19,6 +32,7 @@ export interface LiveChatContext {
   readonly sessionId: string
   readonly language: string | undefined
   readonly WebSocket: WebSocketConstructorLike
+  history(): Promise<HistoryMessage[]>
   end(): Promise<void>
   upload(file: Blob, name: string | undefined): Promise<UploadedFile>
 }
@@ -33,8 +47,8 @@ interface PendingEcho {
 }
 
 const OPEN = 1
-// ponytail: fixed delay like the official widget, exponential backoff if servers ever get hammered.
-const RECONNECT_DELAY_MS = 3000
+const RECONNECT_BASE_MS = 3000
+const RECONNECT_MAX_MS = 30000
 const ECHO_TIMEOUT_MS = 15000
 
 /**
@@ -58,11 +72,15 @@ export class LiveChat {
   }
   #socket: WebSocketLike | null = null
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  #reconnectAttempts = 0
   #pending: PendingEcho[] = []
   #status: LiveChatState | null = null
   #ready = false
   #ended = false
   #closed = false
+  #typing = false
+  /** Server message IDs already known to the visitor; `null` until the first join recorded them. */
+  #seen: Set<number> | null = null
 
   /** @internal Use `chat.liveChat()`. */
   constructor(ctx: LiveChatContext) {
@@ -75,7 +93,7 @@ export class LiveChat {
     return this.#status
   }
 
-  /** Connected and joined; `send()` works. */
+  /** Connected and joined. */
   get ready(): boolean {
     return this.#ready
   }
@@ -83,6 +101,11 @@ export class LiveChat {
   /** `false` after the chat ended or `close()` was called. Get a fresh instance from `chat.liveChat()`. */
   get active(): boolean {
     return !this.#ended && !this.#closed
+  }
+
+  /** A handover is waiting or open: `send()` and `upload()` go to the team member. Otherwise use `chat.send()`. */
+  get canSend(): boolean {
+    return this.active && (this.#status === 'waiting' || this.#status === 'open')
   }
 
   /**
@@ -102,16 +125,16 @@ export class LiveChat {
   /**
    * Send a message to the team member. Resolves with the server's copy of the message,
    * which also arrives as a `message` event. Rejects with `LIVE_CHAT_INACTIVE`
-   * unless a handover is waiting or open (see `chat.requestHuman()`).
+   * unless `canSend` is true (see `chat.requestHuman()`).
    */
-  send(text: string): Promise<LiveChatMessage> {
+  async send(text: string): Promise<LiveChatMessage> {
     const content = text.trim()
-    if (!content) return Promise.reject(new WebChatAgentError('Message is empty.', { code: 'INVALID_INPUT' }))
-    const inactive = this.#inactiveError()
-    if (inactive) return Promise.reject(inactive)
+    if (!content) throw new WebChatAgentError('Message is empty.', { code: 'INVALID_INPUT' })
+    this.#assertCanSend()
     if (!this.#sendFrame({ type: 'client:message', sender: 'user', content })) {
-      return Promise.reject(new WebChatAgentError('Not connected. Wait for the ready event and try again.', { code: 'NETWORK' }))
+      throw new WebChatAgentError('Not connected. Wait for the ready event and try again.', { code: 'NETWORK' })
     }
+    this.typing(false)
     return new Promise((resolve, reject) => {
       const pending: PendingEcho = {
         text: content,
@@ -126,15 +149,16 @@ export class LiveChat {
     })
   }
 
-  /** Tell the team member whether the visitor is typing. */
+  /** Tell the team member whether the visitor is typing. Call it on every keystroke; repeats are not sent. */
   typing(isTyping: boolean): void {
-    this.#sendFrame({ type: 'client:typing', sender: 'user', isTyping })
+    if (isTyping === this.#typing) return
+    if (this.#sendFrame({ type: 'client:typing', sender: 'user', isTyping })) this.#typing = isTyping
   }
 
   /** Send a file (max 5 MB) to the team member. It also arrives as a `message` event with `file`. */
-  upload(file: Blob, name?: string): Promise<UploadedFile> {
-    const inactive = this.#inactiveError()
-    return inactive ? Promise.reject(inactive) : this.#ctx.upload(file, name)
+  async upload(file: Blob, name?: string): Promise<UploadedFile> {
+    this.#assertCanSend()
+    return this.#ctx.upload(file, name)
   }
 
   /** End the live chat for both sides. The bot answers again afterwards. */
@@ -150,9 +174,10 @@ export class LiveChat {
     this.#shutdown()
   }
 
-  #inactiveError(): WebChatAgentError | null {
-    if (this.active && (this.#status === 'waiting' || this.#status === 'open')) return null
-    return new WebChatAgentError('No live chat is waiting or open. Call requestHuman() first.', { code: 'LIVE_CHAT_INACTIVE' })
+  #assertCanSend(): void {
+    if (!this.canSend) {
+      throw new WebChatAgentError('No live chat is waiting or open. Call requestHuman() first.', { code: 'LIVE_CHAT_INACTIVE' })
+    }
   }
 
   #emit<K extends keyof LiveChatEvents>(event: K, payload: LiveChatEvents[K]): void {
@@ -169,9 +194,13 @@ export class LiveChat {
     }
     this.#socket = socket
     socket.onopen = () => {
-      const lang = this.#ctx.language
-      this.#sendFrame({ type: 'client:join', as: 'user', ...(lang ? { lang } : {}) })
-      this.#sendFrame({ type: 'client:meta', ...pageMeta() })
+      this.#sendFrame({ type: 'client:join', as: 'user', lang: this.#ctx.language })
+      this.#sendFrame({
+        type: 'client:meta',
+        pageUrl: currentPageUrl(),
+        pageTitle: globalThis.document?.title,
+        browserLanguage: browserLanguage(),
+      })
     }
     socket.onmessage = (event: { data: unknown }) => {
       if (typeof event.data === 'string') this.#handle(event.data)
@@ -181,6 +210,7 @@ export class LiveChat {
       if (this.#socket !== socket) return
       this.#socket = null
       this.#ready = false
+      this.#typing = false
       if (!this.active) return
       this.#emit('disconnected', undefined)
       this.#scheduleReconnect()
@@ -189,26 +219,22 @@ export class LiveChat {
 
   #scheduleReconnect(): void {
     clearTimeout(this.#reconnectTimer)
+    const delay = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** this.#reconnectAttempts++)
     this.#reconnectTimer = setTimeout(() => {
       if (this.active) this.#connect()
-    }, RECONNECT_DELAY_MS)
+    }, delay)
   }
 
   #sendFrame(frame: JsonObject): boolean {
     const socket = this.#socket
     if (!socket || socket.readyState !== OPEN) return false
-    // The server silently drops frames without chatbotId and sessionId.
+    // The server silently drops frames without chatbotId and sessionId. `undefined` fields are dropped.
     socket.send(JSON.stringify({ ...frame, chatbotId: this.#ctx.chatbotId, sessionId: this.#ctx.sessionId }))
     return true
   }
 
   #handle(data: string): void {
-    let frame: unknown
-    try {
-      frame = JSON.parse(data)
-    } catch {
-      return
-    }
+    const frame = parseJson(data)
     if (!isObject(frame)) return
     switch (frame['type']) {
       case 'livechat:status':
@@ -216,9 +242,8 @@ export class LiveChat {
       case 'livechat:message': {
         if (frame['audience'] === 'admin') return // copies meant for the team member
         const message = toLiveChatMessage(frame, this.#ctx.baseUrl)
-        if (!message) return
-        if (message.role === 'user') this.#resolveEcho(message)
-        return this.#emit('message', message)
+        if (message) this.#deliver(message)
+        return
       }
       case 'livechat:typing':
         if (frame['sender'] === 'admin') this.#emit('typing', frame['isTyping'] === true)
@@ -233,16 +258,47 @@ export class LiveChat {
   #handleStatus(frame: JsonObject): void {
     if (frame['ok'] === true) {
       this.#ready = true
-      return this.#emit('ready', undefined)
+      this.#reconnectAttempts = 0
+      this.#emit('ready', undefined)
+      void this.#catchUp()
+      return
     }
-    const status = frame['status']
-    if (status !== 'waiting' && status !== 'open' && status !== 'closed') return
-    const mode: ChatMode = frame['mode'] === 'human' ? 'human' : 'bot'
+    const status = toLiveChatState(frame['status'])
+    if (!status) return
     this.#status = status
-    this.#emit('status', { status, mode })
+    this.#emit('status', { status, mode: toChatMode(frame['mode']) })
     // While joining, a closed session is followed by `ended: already_closed`.
     // Once joined, the server may close a waiting chat with a status update only.
     if (status === 'closed' && this.#ready) this.#finish('closed')
+  }
+
+  /**
+   * The server does not replay messages to visitors after a reconnect. The first join
+   * records the stored IDs (the app loads `history()` itself); later joins deliver what is new.
+   */
+  async #catchUp(): Promise<void> {
+    let rows: HistoryMessage[]
+    try {
+      rows = await this.#ctx.history()
+    } catch {
+      return // ponytail: best effort, the next reconnect tries again
+    }
+    if (!this.#seen) {
+      this.#seen = new Set(rows.map((row) => row.id))
+      return
+    }
+    for (const { sources, suggestions, role, ...row } of rows) {
+      if (role !== 'assistant') this.#deliver({ ...row, role })
+    }
+  }
+
+  #deliver(message: LiveChatMessage): void {
+    if (message.id !== null) {
+      if (this.#seen?.has(message.id)) return
+      this.#seen?.add(message.id)
+    }
+    if (message.role === 'user') this.#resolveEcho(message)
+    this.#emit('message', message)
   }
 
   #resolveEcho(message: LiveChatMessage): void {
@@ -276,31 +332,16 @@ export class LiveChat {
   }
 }
 
-function toEndReason(value: unknown): LiveChatEndReason {
-  return value === 'user_closed' || value === 'admin_closed' || value === 'already_closed' ? value : 'closed'
-}
-
 function toLiveChatMessage(frame: JsonObject, baseUrl: string): LiveChatMessage | null {
   const sender = frame['sender']
   const role = sender === 'user' ? 'user' : sender === 'admin' ? 'agent' : sender === 'system' ? 'system' : null
   if (!role) return null
-  const content = asString(frame['content'])
-  const event = role === 'system' ? systemEvent(content) : null
+  const file = parseFile(frame['file'], baseUrl)
   return {
     id: typeof frame['id'] === 'number' ? frame['id'] : null,
     role,
-    text: event ? '' : content,
-    file: parseFile(frame['file'], baseUrl),
-    event,
+    ...messageContent(role, asString(frame['content']), file),
+    file,
     createdAt: toIsoDate(frame['createdAt']),
-  }
-}
-
-/** Page context shown to the team member. Empty outside browsers. */
-function pageMeta(): JsonObject {
-  return {
-    ...(typeof location === 'undefined' ? {} : { pageUrl: location.href }),
-    ...(typeof document === 'undefined' ? {} : { pageTitle: document.title }),
-    ...(typeof navigator === 'undefined' || !navigator.language ? {} : { browserLanguage: navigator.language }),
   }
 }

@@ -92,6 +92,7 @@
     const $ = (id) => document.getElementById(id)
     const params = new URLSearchParams(location.search)
     const SYSTEM_TEXT = { agent_joined: 'A team member joined the chat.', ended: 'The live chat has ended.', timeout: 'Nobody was available. The assistant continues.' }
+    const LIVE_LABEL = { waiting: 'Waiting for a team member…', open: 'Chatting with a team member' }
     const shown = new Set() // server message IDs already rendered
     let chat, config, live = null, attachment = null, controller = null, typingTimer
 
@@ -113,10 +114,8 @@
       else body.textContent = text
       li.append(body)
       if (file) {
-        const link = document.createElement('a')
-        link.href = file.url
-        link.target = '_blank'
-        if (file.isImage) { const img = document.createElement('img'); img.src = file.url; img.alt = file.name; link.append(img) }
+        const link = Object.assign(document.createElement('a'), { href: file.url, target: '_blank', rel: 'noopener' })
+        if (file.isImage) link.append(Object.assign(document.createElement('img'), { src: file.url, alt: file.name }))
         else link.textContent = `📎 ${file.name}`
         li.append(link)
       }
@@ -125,20 +124,29 @@
       return li
     }
 
-    function renderBotDetails(li, reply) {
-      if (reply.aiGenerated) li.insertAdjacentHTML('beforeend', '<div class="meta">AI-generated</div>')
-      const links = reply.sources.filter((s) => s.type === 'web')
+    // History messages and live chat messages share role, text, file and event.
+    function renderMessage(message) {
+      if (message.id != null && shown.has(message.id)) return
+      const { id, role, text, file, event } = message
+      if (role === 'system') return event && addMessage('system', { text: SYSTEM_TEXT[event], id })
+      if (role === 'user') return addMessage('user', { text, file, id })
+      const li = addMessage(role === 'agent' ? 'agent' : 'bot', { html: markdown(text), file, id })
+      if (role === 'assistant') renderBotDetails(li, message, true)
+    }
+
+    function renderBotDetails(li, message, aiGenerated) {
+      if (aiGenerated) li.insertAdjacentHTML('beforeend', '<div class="meta">AI-generated</div>')
+      const links = message.sources.filter((s) => s.type === 'web')
       if (links.length) {
         const list = document.createElement('div')
         list.className = 'sources'
         for (const s of links) {
           const url = new URL(s.source)
-          const a = Object.assign(document.createElement('a'), { href: url.href, target: '_blank', rel: 'noopener', textContent: url.hostname + url.pathname })
-          list.append(a, document.createElement('br'))
+          list.append(Object.assign(document.createElement('a'), { href: url.href, target: '_blank', rel: 'noopener', textContent: url.hostname + url.pathname }), document.createElement('br'))
         }
         li.append(list)
       }
-      if (config.features.feedback && reply.aiGenerated) {
+      if (config.features.feedback && aiGenerated) {
         const rating = document.createElement('div')
         rating.className = 'rating'
         for (const [value, label] of [['up', '👍'], ['down', '👎']]) {
@@ -146,7 +154,7 @@
           button.setAttribute('aria-pressed', 'false')
           button.onclick = async () => {
             try {
-              await chat.feedback(reply, value)
+              await chat.feedback(message, value)
               rating.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === button)))
             } catch (error) { showError(error) }
           }
@@ -164,43 +172,28 @@
       }))
     }
 
-    function renderHistory(message) {
-      if (shown.has(message.id)) return
-      const file = message.sources.find((s) => s.type === 'file')?.data
-      if (message.role === 'system') return message.event && addMessage('system', { text: SYSTEM_TEXT[message.event], id: message.id })
-      if (message.role === 'user') return addMessage('user', { text: file ? '' : message.text, file, id: message.id })
-      const li = addMessage(message.role === 'agent' ? 'agent' : 'bot', { html: markdown(message.text), id: message.id })
-      if (message.role === 'assistant') renderBotDetails(li, { ...message, question: '', aiGenerated: true })
-    }
-
-    function setLiveUi(active, label) {
+    function setLiveUi(status) {
+      const active = status === 'waiting' || status === 'open'
       $('end-live').hidden = !active
-      $('state').textContent = label
       $('human')?.toggleAttribute('hidden', active)
+      $('state').textContent = LIVE_LABEL[status] ?? 'Assistant'
     }
 
     function openLiveChat() {
-      if (live?.active) return live
+      if (live?.active) return
       live = chat.liveChat()
-      setLiveUi(true, 'Waiting for a team member…')
-      live.on('status', ({ status }) => setLiveUi(status !== 'closed', status === 'open' ? 'Chatting with a team member' : 'Waiting for a team member…'))
+      setLiveUi('waiting')
+      live.on('status', ({ status }) => setLiveUi(status))
+      live.on('ready', () => setLiveUi(live.status))
       live.on('disconnected', () => { $('state').textContent = 'Reconnecting…' })
-      live.on('ready', async () => {
-        if (live.status) setLiveUi(true, live.status === 'open' ? 'Chatting with a team member' : 'Waiting for a team member…')
-        try { (await chat.history()).forEach(renderHistory) } catch (error) { showError(error) } // catch up after reconnects
-      })
-      live.on('message', (m) => {
-        if (m.role === 'user' || (m.id != null && shown.has(m.id))) return // own messages are rendered when sent
-        if (m.role === 'system') return m.event && addMessage('system', { text: SYSTEM_TEXT[m.event], id: m.id })
-        addMessage('agent', { html: markdown(m.text), file: m.file, id: m.id })
-      })
+      // Includes messages missed during a reconnect. Own messages are rendered when sent.
+      live.on('message', (m) => { if (m.role !== 'user') renderMessage(m) })
       live.on('typing', (isTyping) => { $('typing').hidden = !isTyping })
       live.on('ended', () => {
         $('typing').hidden = true
         addMessage('system', { text: SYSTEM_TEXT.ended })
-        setLiveUi(false, 'Assistant')
+        setLiveUi(null)
       })
-      return live
     }
 
     async function submit(text) {
@@ -210,10 +203,10 @@
       $('input').value = ''
       renderSuggestions([])
 
-      if (live?.active && (live.status === 'waiting' || live.status === 'open')) {
+      if (live?.canSend) {
         const li = addMessage('user', { text })
         li.classList.add('pending')
-        try { const sent = await live.send(text); shown.add(sent.id); li.classList.remove('pending') }
+        try { shown.add((await live.send(text)).id); li.classList.remove('pending') }
         catch (error) { li.classList.replace('pending', 'failed'); showError(error) }
         return
       }
@@ -224,13 +217,18 @@
       $('attachment').hidden = true
       const li = addMessage('bot', { text: '…' })
       const body = li.firstChild
+      let latest = null, frame = 0
       controller = new AbortController()
       $('stop').hidden = false
       try {
         for await (const event of chat.stream(text, { ...options, signal: controller.signal })) {
-          if (event.type === 'text') { body.innerHTML = markdown(event.text); scroll() }
-          if (event.type === 'tool') body.textContent = 'Looking that up…'
+          if (event.type === 'text') {
+            // Render at most once per frame: Markdown + sanitizing the whole answer on every token is wasted work.
+            latest = event.text
+            frame ||= requestAnimationFrame(() => { frame = 0; body.innerHTML = markdown(latest); scroll() })
+          }
           if (event.type === 'done') {
+            cancelAnimationFrame(frame)
             const { reply } = event
             if (reply.mode === 'human') {
               if (reply.text) body.innerHTML = markdown(reply.text)
@@ -239,13 +237,14 @@
               continue
             }
             body.innerHTML = markdown(reply.text)
-            renderBotDetails(li, reply)
+            renderBotDetails(li, reply, reply.aiGenerated)
             renderSuggestions(reply.suggestions)
             if (reply.attachmentTruncated) addMessage('system', { text: 'Only the beginning of the file was read.' })
             if (reply.conversationTooLong) addMessage('system', { text: 'This conversation is full. Start a new chat to continue.' })
           }
         }
       } catch (error) {
+        cancelAnimationFrame(frame)
         body.textContent = error?.name === 'AbortError' ? 'Stopped.' : 'Sorry, something went wrong.'
         showError(error)
       } finally {
@@ -255,6 +254,7 @@
       }
     }
 
+    // The browser validates required and e-mail fields before onSubmit runs; the SDK checks again.
     function openDialog(title, fields, submitLabel, onSubmit) {
       const form = $('dialog-form')
       form.replaceChildren(Object.assign(document.createElement('h2'), { textContent: title }))
@@ -268,15 +268,15 @@
           input = document.createElement('select')
           input.append(new Option('', ''), ...(field.options ?? []).map((o) => new Option(o, o)))
         } else input = Object.assign(document.createElement('input'), { type: field.type === 'checkbox' ? 'checkbox' : field.type })
-        input.name = field.id
-        if (field.placeholder) input.placeholder = field.placeholder
+        Object.assign(input, { name: field.id, required: field.required, placeholder: field.placeholder ?? '' })
         label.append(input)
         form.append(label)
       }
       const menu = document.createElement('menu')
-      const cancel = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Cancel', onclick: () => $('dialog').close() })
-      const ok = Object.assign(document.createElement('button'), { className: 'primary', textContent: submitLabel })
-      menu.append(cancel, ok)
+      menu.append(
+        Object.assign(document.createElement('button'), { type: 'button', textContent: 'Cancel', onclick: () => $('dialog').close() }),
+        Object.assign(document.createElement('button'), { className: 'primary', textContent: submitLabel }),
+      )
       form.append(menu)
       form.onsubmit = async (event) => {
         event.preventDefault()
@@ -284,15 +284,10 @@
           const input = form.elements.namedItem(f.id)
           return [f.id, !input ? undefined : input.type === 'checkbox' ? input.checked : input.value]
         }))
-        form.querySelectorAll('.invalid').forEach((el) => el.classList.remove('invalid'))
         try {
           await onSubmit(values)
           $('dialog').close()
-        } catch (error) {
-          const { missing = [], invalid = [] } = error instanceof WebChatAgentError && error.code === 'INVALID_INPUT' ? error.body ?? {} : {}
-          for (const id of [...missing, ...invalid]) form.elements.namedItem(id)?.classList.add('invalid')
-          if (!missing.length && !invalid.length) showError(error)
-        }
+        } catch (error) { showError(error) }
       }
       $('dialog').showModal()
     }
@@ -315,25 +310,19 @@
       })
       if (config.features.liveChat) {
         const human = Object.assign(document.createElement('button'), { type: 'button', id: 'human', textContent: 'Talk to a person' })
-        human.onclick = () => {
-          const fields = [
-            ...(config.features.askName ? [{ id: 'name', type: 'text', label: 'Name', required: true }] : []),
-            ...(config.features.askEmail ? [{ id: 'email', type: 'email', label: 'E-mail', required: true }] : []),
-          ]
-          if (!fields.length) return requestHuman().catch(showError)
-          openDialog('Talk to a person', fields, 'Request', (values) => {
-            const missing = fields.filter((f) => !values[f.id]).map((f) => f.id)
-            if (missing.length) throw new WebChatAgentError('Required', { code: 'INVALID_INPUT', body: { missing, invalid: [] } })
-            return requestHuman(values)
-          })
-        }
+        const fields = [
+          ...(config.features.askName ? [{ id: 'name', type: 'text', label: 'Name', required: true }] : []),
+          ...(config.features.askEmail ? [{ id: 'email', type: 'email', label: 'E-mail', required: true }] : []),
+        ]
+        human.onclick = () => fields.length ? openDialog('Talk to a person', fields, 'Request', requestHuman) : requestHuman().catch(showError)
         buttons.push(human)
       }
       $('actions').replaceChildren(...buttons)
     }
 
     function welcome() {
-      if (config.widget.welcomeMessage) addMessage('bot', { html: markdown(config.widget.welcomeMessage) })
+      // welcomeMessage is HTML from the dashboard
+      if (config.widget.welcomeMessage) addMessage('bot', { html: DOMPurify.sanitize(config.widget.welcomeMessage) })
       renderSuggestions((config.widget.promptButtons ?? []).map((b) => ({ label: b.title, text: b.action })))
     }
 
@@ -344,7 +333,8 @@
         $('state').textContent = 'Add ?chatbotId=<your chatbot ID> to the URL.'
         return showError(error)
       }
-      config = await chat.getConfig()
+      const [loadedConfig, history, status] = await Promise.all([chat.getConfig(), chat.history(), chat.liveChatStatus()])
+      config = loadedConfig
       if (config.archived) { $('state').textContent = 'This chat is not available.'; $('composer').hidden = true; return }
       const { widget } = config
       $('title').textContent = widget.title || 'Chat'
@@ -357,10 +347,8 @@
       $('input').maxLength = MAX_MESSAGE_LENGTH
       renderActions()
 
-      const history = await chat.history()
-      if (history.length) history.forEach(renderHistory)
+      if (history.length) history.forEach(renderMessage)
       else welcome()
-      const status = await chat.liveChatStatus()
       if (status && status.status !== 'closed') openLiveChat()
     }
 
@@ -372,12 +360,12 @@
       live = null
       shown.clear()
       $('messages').replaceChildren()
-      setLiveUi(false, 'Assistant')
+      setLiveUi(null)
       welcome()
     }
     $('input').oninput = () => {
-      if (!live?.active) return
-      live.typing(true)
+      if (!live?.canSend) return
+      live.typing(true) // repeats are not sent
       clearTimeout(typingTimer)
       typingTimer = setTimeout(() => live?.typing(false), 1500)
     }
@@ -388,7 +376,7 @@
       if (!file) return
       $('error').hidden = true
       try {
-        if (live?.active) {
+        if (live?.canSend) {
           const sent = await live.upload(file)
           addMessage('user', { file: sent, id: sent.messageId })
         } else {

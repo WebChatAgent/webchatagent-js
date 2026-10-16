@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   cleanStreamingText,
-  errorMessage,
+  errorInfo,
   extractSuggestions,
   isUuid,
   parseSources,
@@ -106,10 +106,15 @@ describe('helpers', () => {
   })
 
   it('reads all four error body shapes', () => {
-    expect(errorMessage({ error: true, statusCode: 429, message: 'Too many requests' }, 429)).toBe('Too many requests')
-    expect(errorMessage({ reply: '<p>The chat is temporarily unavailable.</p>', sources: [] }, 429)).toBe('The chat is temporarily unavailable.')
-    expect(errorMessage({ error: 'Invalid chatbotId' }, 400)).toBe('Invalid chatbotId')
-    expect(errorMessage({ ok: false, code: 'FILE_TOO_LARGE' }, 413)).toBe('Request failed with status 413')
+    expect(errorInfo({ error: true, statusCode: 429, message: 'Too many requests' }, 429)).toEqual({ code: 'HTTP', message: 'Too many requests' })
+    expect(errorInfo({ reply: '<p>The chat is temporarily unavailable.</p>', sources: [] }, 429).message).toBe('The chat is temporarily unavailable.')
+    expect(errorInfo({ error: 'Invalid chatbotId' }, 400).message).toBe('Invalid chatbotId')
+    expect(errorInfo({ ok: false, code: 'FILE_TOO_LARGE', maxBytes: 2097152 }, 413)).toEqual({ code: 'FILE_TOO_LARGE', message: 'The file is too large (max 2 MB).' })
+    expect(errorInfo({ ok: false, code: 'UNSUPPORTED_TYPE', allowed: ['png', 'pdf'] }, 415)).toEqual({
+      code: 'UNSUPPORTED_TYPE',
+      message: 'This file type is not supported. Allowed: png, pdf.',
+    })
+    expect(errorInfo('Bad Gateway', 502).message).toBe('Request failed with status 502')
   })
 
   it('parses sources and makes file URLs absolute', () => {

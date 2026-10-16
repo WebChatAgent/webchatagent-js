@@ -1,3 +1,5 @@
+import type { ACTION_BAR_TYPES, FORM_FIELD_TYPES, LIVE_CHAT_STATES } from './parse.js'
+
 /** Minimal synchronous key/value store, e.g. `window.localStorage` or `sessionStorage`. */
 export interface StorageLike {
   getItem(key: string): string | null
@@ -117,7 +119,7 @@ export interface FileSourceData {
 export type ChatMode = 'bot' | 'human'
 
 /** `waiting` = handover requested, nobody joined yet. `open` = a team member is chatting. `closed` = ended. */
-export type LiveChatState = 'waiting' | 'open' | 'closed'
+export type LiveChatState = (typeof LIVE_CHAT_STATES)[number]
 
 /** A complete answer from `send()` or the final `done` event of `stream()`. */
 export interface ChatReply {
@@ -145,8 +147,6 @@ export interface ChatReply {
 export type ChatStreamEvent =
   /** New text. `text` is the full answer so far, cleaned for display. `delta` is what was added (may be empty). */
   | { type: 'text'; text: string; delta: string }
-  /** The bot is using a tool, e.g. searching products or booking an appointment. */
-  | { type: 'tool'; name: string }
   /** A problem the server recovered from. The stream continues. */
   | { type: 'error'; message: string }
   /** The final answer. */
@@ -163,8 +163,10 @@ export interface HistoryMessage {
   /** Server ID. Stable, use it to de-duplicate against live chat messages. */
   id: number
   role: MessageRole
-  /** Markdown text. Empty for system messages and pure file uploads. */
+  /** Markdown text. Empty for system messages and file uploads (see `file`). */
   text: string
+  /** A file the visitor or a team member sent. */
+  file: ChatFile | null
   sources: Source[]
   suggestions: Suggestion[]
   /** Set when `role` is `system`. */
@@ -195,7 +197,7 @@ export type LiveChatEndReason = 'user_closed' | 'admin_closed' | 'already_closed
 
 /** Payloads of the events emitted by `LiveChat`. */
 export interface LiveChatEvents {
-  /** Connected and joined. Fires again after every reconnect: reload `history()` then to catch up. */
+  /** Connected and joined. Fires again after every reconnect; messages missed meanwhile arrive as `message` events. */
   ready: undefined
   /** A message from the team member, the system, or the echo of your own message. */
   message: LiveChatMessage
@@ -230,7 +232,7 @@ export interface PromptButton {
 }
 
 /** Field types offered in the dashboard. `info` is display-only text (its `label`). */
-export type FormFieldType = 'text' | 'email' | 'tel' | 'textarea' | 'select' | 'checkbox' | 'number' | 'info'
+export type FormFieldType = (typeof FORM_FIELD_TYPES)[number]
 
 export interface FormField {
   id: string
@@ -257,7 +259,7 @@ export type FormValues = Record<string, string | number | boolean | undefined>
 
 export interface ActionBarItem {
   id: string
-  type: 'link' | 'whatsapp' | 'form' | 'calendly'
+  type: (typeof ACTION_BAR_TYPES)[number]
   label: string
   /** Icon preset key, e.g. `cart` or `help`. */
   icon?: string | undefined
@@ -274,6 +276,7 @@ export interface ActionBarItem {
  */
 export interface WidgetSettings {
   title?: string
+  /** Greeting as HTML (rich text from the dashboard). Sanitize before inserting it. */
   welcomeMessage?: string
   welcomeImage?: string
   /** Bot avatar URL, may be empty. */

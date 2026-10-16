@@ -1,6 +1,52 @@
-import type { ChatFile, FileSourceData, ProductSourceData, Source, Suggestion, SystemEvent } from './types.js'
+import type {
+  ChatFile,
+  ChatMode,
+  FileSourceData,
+  LiveChatEndReason,
+  LiveChatState,
+  MessageRole,
+  ProductSourceData,
+  Source,
+  Suggestion,
+  SystemEvent,
+  WebChatAgentErrorCode,
+} from './types.js'
 
 export type JsonObject = Record<string, unknown>
+
+export const LIVE_CHAT_STATES = ['waiting', 'open', 'closed'] as const
+export const FORM_FIELD_TYPES = ['text', 'email', 'tel', 'textarea', 'select', 'checkbox', 'number', 'info'] as const
+export const ACTION_BAR_TYPES = ['link', 'whatsapp', 'form', 'calendly'] as const
+
+/** `JSON.parse` that returns `undefined` instead of throwing. */
+export function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+export function toLiveChatState(value: unknown): LiveChatState | null {
+  return LIVE_CHAT_STATES.find((state) => state === value) ?? null
+}
+
+export function toChatMode(value: unknown): ChatMode {
+  return value === 'human' ? 'human' : 'bot'
+}
+
+export function toEndReason(value: unknown): LiveChatEndReason {
+  return value === 'user_closed' || value === 'admin_closed' || value === 'already_closed' ? value : 'closed'
+}
+
+/** `location.href` in browsers, `undefined` elsewhere. */
+export function currentPageUrl(): string | undefined {
+  return globalThis.location?.href
+}
+
+export function browserLanguage(): string | undefined {
+  return globalThis.navigator?.language || undefined
+}
 
 export function isObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -55,13 +101,8 @@ function parseFrame(block: string): JsonObject | null {
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).replace(/^ /, ''))
     .join('\n')
-  if (!data) return null
-  try {
-    const parsed: unknown = JSON.parse(data)
-    return isObject(parsed) && typeof parsed['type'] === 'string' ? parsed : null
-  } catch {
-    return null
-  }
+  const parsed = data ? parseJson(data) : undefined
+  return isObject(parsed) && typeof parsed['type'] === 'string' ? parsed : null
 }
 
 /**
@@ -101,12 +142,7 @@ const SUGGESTIONS_RE = /<!--\s*SUGGESTED_BUTTONS:\s*(\[[\s\S]*?\])\s*-->/
 export function extractSuggestions(markdown: string): { text: string; suggestions: Suggestion[] } {
   const match = SUGGESTIONS_RE.exec(markdown)
   if (!match) return { text: markdown.trim(), suggestions: [] }
-  let parsed: unknown = []
-  try {
-    parsed = JSON.parse(match[1] ?? '[]')
-  } catch {
-    parsed = []
-  }
+  const parsed = parseJson(match[1] ?? '[]')
   const suggestions = (Array.isArray(parsed) ? parsed : [])
     .filter(isObject)
     .map((item) => ({ label: asString(item['label']).trim(), text: asString(item['text']).trim() }))
@@ -123,6 +159,15 @@ const SYSTEM_EVENTS: Record<string, SystemEvent> = {
 /** Maps the server's system message tokens to `SystemEvent`. */
 export function systemEvent(content: string): SystemEvent | null {
   return SYSTEM_EVENTS[content.trim()] ?? null
+}
+
+/**
+ * Text and system event of a stored or live message. System messages carry a token,
+ * uploads carry the file name as text: both become `''` so UIs never show them twice.
+ */
+export function messageContent(role: MessageRole, raw: string, file: ChatFile | null): { text: string; event: SystemEvent | null } {
+  const event = role === 'system' ? systemEvent(raw) : null
+  return { text: event || (file && raw === file.name) ? '' : raw, event }
 }
 
 /** The server sends ISO strings and sometimes `Date.prototype.toString()` output. */
@@ -202,7 +247,7 @@ function fileSourceData(data: JsonObject): FileSourceData {
 
 const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", nbsp: ' ' }
 
-export function stripHtml(html: string): string {
+function stripHtml(html: string): string {
   return html
     .replace(/<[^>]*>/g, ' ')
     .replace(/&(amp|lt|gt|quot|#39|nbsp);/g, (_, name: string) => ENTITIES[name] ?? '')
@@ -210,13 +255,23 @@ export function stripHtml(html: string): string {
     .trim()
 }
 
-/** Reads a human-readable message from any of the server's four error body shapes. */
-export function errorMessage(body: unknown, status: number): string {
+/** `code` and a readable `message` for any of the server's four error body shapes. */
+export function errorInfo(body: unknown, status: number): { code: WebChatAgentErrorCode; message: string } {
   if (isObject(body)) {
-    if (typeof body['reply'] === 'string' && body['reply']) return stripHtml(body['reply'])
-    if (typeof body['error'] === 'string' && body['error']) return body['error']
-    if (typeof body['message'] === 'string' && body['message']) return body['message']
-    if (typeof body['statusMessage'] === 'string' && body['statusMessage']) return body['statusMessage']
+    const maxBytes = body['maxBytes']
+    if (body['code'] === 'FILE_TOO_LARGE') {
+      const limit = typeof maxBytes === 'number' ? ` (max ${Math.round(maxBytes / 1024 / 1024)} MB)` : ''
+      return { code: 'FILE_TOO_LARGE', message: `The file is too large${limit}.` }
+    }
+    const allowed = body['allowed']
+    if (body['code'] === 'UNSUPPORTED_TYPE') {
+      const types = Array.isArray(allowed) ? allowed.filter((t): t is string => typeof t === 'string') : []
+      return { code: 'UNSUPPORTED_TYPE', message: `This file type is not supported.${types.length ? ` Allowed: ${types.join(', ')}.` : ''}` }
+    }
+    for (const key of ['reply', 'error', 'message', 'statusMessage']) {
+      const value = body[key]
+      if (typeof value === 'string' && value) return { code: 'HTTP', message: key === 'reply' ? stripHtml(value) : value }
+    }
   }
-  return `Request failed with status ${status}`
+  return { code: 'HTTP', message: `Request failed with status ${status}` }
 }

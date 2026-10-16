@@ -64,7 +64,11 @@ describe('LiveChat', () => {
   it('refuses to send before a handover was requested', async () => {
     const { live, socket } = setup()
     join(socket)
+    expect(live.canSend).toBe(false)
     await expect(live.send('Hello')).rejects.toMatchObject({ code: 'LIVE_CHAT_INACTIVE' })
+    await expect(live.upload(new Blob(['x']), 'a.txt')).rejects.toMatchObject({ code: 'LIVE_CHAT_INACTIVE' })
+    socket.receive({ type: 'livechat:status', status: 'waiting', mode: 'human' })
+    expect(live.canSend).toBe(true)
     expect(socket.sent.filter((f) => f['type'] === 'client:message')).toEqual([])
   })
 
@@ -136,27 +140,73 @@ describe('LiveChat', () => {
   })
 
   it('ends via REST', async () => {
-    const fetch = mockFetch(json({ ok: true }))
+    const fetch = mockFetch(json({ messages: [] }), json({ ok: true }))
     const { live, socket, events } = setup(fetch)
     join(socket, 'open')
     await live.end()
-    expect(fetch.calls[0]?.url).toBe('https://webchatagent.com/api/livechats/end')
-    expect(bodyOf(fetch.calls[0])).toEqual({ chatbotId: CHATBOT_ID, sessionId: SESSION_ID })
+    expect(fetch.calls[1]?.url).toBe('https://webchatagent.com/api/livechats/end')
+    expect(bodyOf(fetch.calls[1])).toEqual({ chatbotId: CHATBOT_ID, sessionId: SESSION_ID })
     expect(events.at(-1)).toEqual(['ended', { reason: 'user_closed' }])
     expect(socket.readyState).toBe(3)
   })
 
   it('uploads files as visitor', async () => {
     const fetch = mockFetch(
+      json({ messages: [] }),
       json({ ok: true, uploadId: 'l1', messageId: 3, file: { kind: 'file', uploadId: 'l1', name: 'photo.jpg', mimeType: 'image/jpeg', size: 1, url: '/api/livechat/upload/l1', isImage: true } }),
     )
     const { live, socket } = setup(fetch)
     join(socket, 'open')
     const file = await live.upload(new Blob(['x']), 'photo.jpg')
-    const form = fetch.calls[0]?.init.body
+    const form = fetch.calls[1]?.init.body
     if (!(form instanceof FormData)) throw new Error('expected FormData')
-    expect(fetch.calls[0]?.url).toBe('https://webchatagent.com/api/livechat/upload')
+    expect(fetch.calls[1]?.url).toBe('https://webchatagent.com/api/livechat/upload')
     expect(form.get('as')).toBe('user')
     expect(file.url).toBe('https://webchatagent.com/api/livechat/upload/l1')
+  })
+
+  it('sends typing changes only', () => {
+    const { live, socket } = setup()
+    join(socket, 'open')
+    live.typing(true)
+    live.typing(true)
+    live.typing(false)
+    expect(socket.sent.filter((f) => f['type'] === 'client:typing').map((f) => f['isTyping'])).toEqual([true, false])
+  })
+
+  it('backs off between reconnect attempts', () => {
+    vi.useFakeTimers()
+    const { socket } = setup()
+    socket.drop()
+    vi.advanceTimersByTime(3000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    FakeWebSocket.last.drop()
+    vi.advanceTimersByTime(5999)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    vi.advanceTimersByTime(1)
+    expect(FakeWebSocket.instances).toHaveLength(3)
+  })
+
+  it('delivers messages missed while disconnected', async () => {
+    vi.useFakeTimers()
+    const row = (id: number, role: string, isAgent: boolean, text: string) => ({ id, sender: role === 'user' ? 'user' : 'bot', role, isAgent, text, sources: null, createdAt: '2026-10-16T10:00:00.000Z' })
+    const fetch = mockFetch(
+      json({ messages: [row(1, 'user', false, 'Hi'), row(2, 'assistant', true, 'Hello, Anna here.')] }),
+      json({ messages: [row(1, 'user', false, 'Hi'), row(2, 'assistant', true, 'Hello, Anna here.'), row(3, 'assistant', true, 'Are you still there?'), row(4, 'assistant', false, 'Bot answer')] }),
+    )
+    const { socket, events } = setup(fetch)
+    join(socket, 'open')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events.filter(([name]) => name === 'message')).toEqual([])
+    socket.drop()
+    await vi.advanceTimersByTimeAsync(3000)
+    FakeWebSocket.last.open()
+    join(FakeWebSocket.last)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(events.filter(([name]) => name === 'message')).toEqual([
+      ['message', { id: 3, role: 'agent', text: 'Are you still there?', file: null, event: null, createdAt: '2026-10-16T10:00:00.000Z' }],
+    ])
+    FakeWebSocket.last.receive({ type: 'livechat:message', id: 3, sender: 'admin', content: 'Are you still there?', createdAt: '2026-10-16T10:00:00.000Z' })
+    expect(events.filter(([name]) => name === 'message')).toHaveLength(1)
   })
 })

@@ -12,14 +12,6 @@ async function collect(stream: AsyncIterable<ChatStreamEvent>): Promise<ChatStre
   return events
 }
 
-async function rejection(promise: Promise<unknown>): Promise<WebChatAgentError> {
-  const error = await promise.then(
-    () => null,
-    (e: unknown) => e,
-  )
-  if (!(error instanceof WebChatAgentError)) throw new Error(`expected WebChatAgentError, got ${String(error)}`)
-  return error
-}
 
 describe('constructor', () => {
   it('validates options', () => {
@@ -113,13 +105,14 @@ describe('send', () => {
   it('rejects invalid messages without a request', async () => {
     const fetch = mockFetch()
     const chat = client(fetch)
-    expect((await rejection(chat.send('x'.repeat(701)))).code).toBe('INVALID_INPUT')
-    expect((await rejection(chat.send('   '))).code).toBe('INVALID_INPUT')
+    await expect(chat.send('x'.repeat(701))).rejects.toMatchObject({ code: 'INVALID_INPUT' })
+    await expect(chat.send('   ')).rejects.toMatchObject({ code: 'INVALID_INPUT' })
     expect(fetch.calls).toHaveLength(0)
   })
 
   it('turns every error shape into a WebChatAgentError', async () => {
     const fetch = mockFetch(
+      json({ error: true, statusCode: 429, statusMessage: 'Too Many Requests', message: 'Too many requests, slow down.' }, 429),
       json({ error: true, statusCode: 429, statusMessage: 'Too Many Requests', message: 'Too many requests, slow down.' }, 429),
       json({ reply: '<p>The chat is temporarily unavailable.</p>', sources: [] }, 429),
       () => {
@@ -127,9 +120,10 @@ describe('send', () => {
       },
     )
     const chat = client(fetch)
-    expect(await rejection(chat.send('a'))).toMatchObject({ code: 'HTTP', status: 429, message: 'Too many requests, slow down.' })
-    expect(await rejection(chat.send('b'))).toMatchObject({ code: 'HTTP', status: 429, message: 'The chat is temporarily unavailable.' })
-    expect(await rejection(chat.send('c'))).toMatchObject({ code: 'NETWORK', status: 0 })
+    await expect(chat.send('a')).rejects.toBeInstanceOf(WebChatAgentError)
+    await expect(chat.send('a')).rejects.toMatchObject({ code: 'HTTP', status: 429, message: 'Too many requests, slow down.' })
+    await expect(chat.send('b')).rejects.toMatchObject({ code: 'HTTP', status: 429, message: 'The chat is temporarily unavailable.' })
+    await expect(chat.send('c')).rejects.toMatchObject({ code: 'NETWORK', status: 0 })
   })
 
   it('passes AbortError through', async () => {
@@ -145,7 +139,7 @@ describe('stream', () => {
     const fetch = mockFetch(
       sse([
         'data: {"type":"token","data":"We ship "}\n\n',
-        'data: {"type":"tool_call","name":"searchProducts"}\n\n',
+        'data: {"type":"tool_call","name":"collectQuestions"}\n\n',
         'data: {"type":"token","data":"in [2 days](https://shop.ex"}\n\n',
         'data: {"type":"token","data":"ample/shipping)."}\n\n',
         'data: {"type":"done","reply":"We ship in [2 days](https://shop.example/shipping).","sources":[],"mode":"bot","conversationTooLong":false,"aiGenerated":true}\n\n',
@@ -155,7 +149,6 @@ describe('stream', () => {
     expect(headersOf(fetch.calls[0])['Accept']).toBe('text/event-stream')
     expect(events).toEqual([
       { type: 'text', text: 'We ship ', delta: 'We ship ' },
-      { type: 'tool', name: 'searchProducts' },
       { type: 'text', text: 'We ship in ', delta: 'in ' },
       { type: 'text', text: 'We ship in [2 days](https://shop.example/shipping).', delta: '[2 days](https://shop.example/shipping).' },
       { type: 'done', reply: expect.objectContaining({ text: 'We ship in [2 days](https://shop.example/shipping).', mode: 'bot' }) },
@@ -170,8 +163,7 @@ describe('stream', () => {
 
   it('throws with the server message when the stream ends without done', async () => {
     const fetch = mockFetch(sse(['data: {"type":"error","data":"Model overloaded"}\n\n']))
-    const error = await rejection(collect(client(fetch).stream('Hi')))
-    expect(error).toMatchObject({ code: 'STREAM_INTERRUPTED', message: 'Model overloaded' })
+    await expect(collect(client(fetch).stream('Hi'))).rejects.toMatchObject({ code: 'STREAM_INTERRUPTED', message: 'Model overloaded' })
   })
 
   it('cancels the request when the consumer stops early', async () => {
@@ -205,12 +197,12 @@ describe('history', () => {
     const messages = await client(fetch).history()
     expect(fetch.calls[0]?.url).toBe(`https://webchatagent.com/api/chat/history?chatbotId=${CHATBOT_ID}&sessionId=${SESSION_ID}`)
     expect(messages.map((m) => [m.id, m.role, m.text, m.event])).toEqual([
-      [1, 'user', 'invoice.pdf', null],
+      [1, 'user', '', null],
       [2, 'assistant', 'Total: 12 €', null],
       [3, 'system', '', 'agent_joined'],
       [4, 'agent', 'Hi, Anna here.', null],
     ])
-    expect(messages[0]?.sources[0]).toMatchObject({ type: 'file', source: 'https://webchatagent.com/api/ai-chat/upload/u1' })
+    expect(messages[0]?.file).toMatchObject({ name: 'invoice.pdf', url: 'https://webchatagent.com/api/ai-chat/upload/u1' })
     expect(messages[1]?.suggestions).toEqual([{ label: 'Pay', text: 'How can I pay?' }])
   })
 
@@ -227,6 +219,7 @@ describe('getConfig', () => {
       json({
         widgetProperties: {
           title: 'Shop Bot',
+          avatarSrc: '/api/chatbots/x/widget-image/avatarSrc?v=1',
           promptButtons: [{ title: 'Hours', action: 'When are you open?', _uid: 'x' }],
           thumbsFeedbackEnabled: true,
           liveChatAskName: true,
@@ -244,10 +237,12 @@ describe('getConfig', () => {
     )
     const config = await client(fetch).getConfig()
     expect(config.widget.title).toBe('Shop Bot')
+    expect(config.widget.avatarSrc).toBe('https://webchatagent.com/api/chatbots/x/widget-image/avatarSrc?v=1')
+    expect(config.widget.actionBar?.items).toEqual([{ id: 'i1', type: 'form', label: 'Call me', formId: 'f1' }])
     expect(config.widget.promptButtons).toEqual([{ title: 'Hours', action: 'When are you open?' }])
     expect(config.features).toEqual({ fileUpload: true, feedback: true, liveChat: true, askName: true, askEmail: false })
     expect(config.forms).toEqual([form])
-    expect(config.branding).toEqual({ required: true, text: 'Powered by WebChatAgent', url: 'https://webchatagent.com' })
+    expect(config.branding).toEqual({ required: true, text: 'Powered by WebChatAgent', url: 'https://webchatagent.com/' })
   })
 
   it('handles archived chatbots', async () => {
@@ -273,7 +268,7 @@ describe('upload, feedback, forms, handover', () => {
 
   it('maps upload error codes', async () => {
     const fetch = mockFetch(json({ ok: false, code: 'FILE_TOO_LARGE', maxBytes: 2097152 }, 413))
-    expect(await rejection(client(fetch).upload(new Blob(['x'])))).toMatchObject({ code: 'FILE_TOO_LARGE', status: 413 })
+    await expect(client(fetch).upload(new Blob(['x']))).rejects.toMatchObject({ code: 'FILE_TOO_LARGE', status: 413 })
   })
 
   it('sends feedback for a reply', async () => {
@@ -305,7 +300,7 @@ describe('upload, feedback, forms, handover', () => {
     }
     const fetch = mockFetch(json({ ok: true }))
     const chat = client(fetch)
-    expect(await rejection(chat.submitForm(form, { e: 'nope' }))).toMatchObject({ code: 'INVALID_INPUT', body: { missing: ['n'], invalid: ['e'] } })
+    await expect(chat.submitForm(form, { e: 'nope' })).rejects.toMatchObject({ code: 'INVALID_INPUT', body: { missing: ['n'], invalid: ['e'] } })
     await chat.submitForm(form, { n: 'Jane', e: '', c: true })
     expect(bodyOf(fetch.calls[0])).toEqual({
       chatbotId: CHATBOT_ID,

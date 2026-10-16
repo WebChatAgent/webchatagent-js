@@ -76,9 +76,6 @@ for await (const event of chat.stream('Which plan fits a small shop?')) {
     case 'text':
       bubble.innerHTML = render(event.text) // full text so far; event.delta = just the new part
       break
-    case 'tool':
-      bubble.textContent = 'Looking that up…' // the bot searches products, books an appointment, …
-      break
     case 'error':
       console.warn(event.message) // the server recovered, the stream continues
       break
@@ -122,7 +119,7 @@ chat.reset() // start a new conversation
 - Conversations without activity for 30 days are deleted; `history()` then returns `[]`.
 - When `reply.conversationTooLong` is `true` the conversation hit its length limit: call `reset()`.
 
-`history()` returns `HistoryMessage[]` with `role` `'user'`, `'assistant'` (AI), `'agent'` (human team member) or `'system'` (see `event`: `'agent_joined'`, `'ended'`, `'timeout'`).
+`history()` returns `HistoryMessage[]` with `role` `'user'`, `'assistant'` (AI), `'agent'` (human team member) or `'system'` (see `event`: `'agent_joined'`, `'ended'`, `'timeout'`). Uploaded files are in `file`; their `text` is empty. Live chat messages have the same `role`, `text`, `file` and `event` fields.
 
 ## Rendering answers
 
@@ -153,7 +150,7 @@ Each `ChatReply` also has:
 const config = await chat.getConfig()
 
 config.widget.title            // 'Shop Assistant'
-config.widget.welcomeMessage   // greeting to show first
+config.widget.welcomeMessage   // greeting to show first, HTML: sanitize before inserting
 config.widget.promptButtons    // [{ title, action }] starter questions: show title, send action
 config.widget.avatarSrc        // avatar URL ('' when none)
 config.widget.themeColor       // and other colors
@@ -238,19 +235,23 @@ function openLiveChat() {
     showAgentMessage(message.text, message.file) // role 'agent'
   })
   live.on('typing', (isTyping) => setAgentTyping(isTyping))
-  live.on('ready', async () => mergeHistory(await chat.history())) // also after reconnects; de-duplicate by message.id
   live.on('ended', ({ reason }) => backToBot()) // 'user_closed' | 'admin_closed' | 'already_closed' | 'closed'
-  live.on('disconnected', () => setStatus('reconnecting')) // reconnects automatically
+  live.on('disconnected', () => setStatus('reconnecting'))
+  live.on('ready', () => setStatus(live.status)) // connected again
   return live
 }
 ```
 
-**3. Talk** while the status is `waiting` or `open`. Messages go through the live chat, not `send()`:
+The connection reconnects by itself (3 s, then up to 30 s apart). Messages the team member sent while the visitor was offline arrive as `message` events after the reconnect, so you never need to merge `history()` yourself.
+
+**3. Talk** while `live.canSend` is true (status `waiting` or `open`). Messages go through the live chat, not `send()`:
 
 ```ts
-showOwnMessage(text) // render immediately
-await live.send(text) // resolves when the server confirmed it
-input.oninput = () => live.typing(true)
+if (live.canSend) {
+  showOwnMessage(text) // render immediately
+  await live.send(text) // resolves when the server confirmed it
+}
+input.oninput = () => live.typing(true) // call on every keystroke, only changes are sent
 await live.upload(file) // max 5 MB, also archives and office files
 ```
 
@@ -430,7 +431,7 @@ const chat = new WebChatAgent({ chatbotId, baseUrl: 'https://chat.your-agency.co
 | Member | Returns | |
 |---|---|---|
 | `send(message, options?)` | `Promise<ChatReply>` | Complete answer |
-| `stream(message, options?)` | `AsyncGenerator<ChatStreamEvent>` | `text`, `tool`, `error`, `done` |
+| `stream(message, options?)` | `AsyncGenerator<ChatStreamEvent>` | `text`, `error`, `done` |
 | `history()` | `Promise<HistoryMessage[]>` | Messages of the conversation |
 | `getConfig()` | `Promise<ChatbotConfig>` | Settings, features, forms, branding |
 | `upload(file, name?)` | `Promise<UploadedFile>` | Then `send(text, { attachment })` |
@@ -451,6 +452,7 @@ const chat = new WebChatAgent({ chatbotId, baseUrl: 'https://chat.your-agency.co
 |---|---|
 | `on(event, listener)` | Events: `ready`, `message`, `status`, `typing`, `ended`, `disconnected`. Returns an unsubscribe function. |
 | `send(text)` | `Promise<LiveChatMessage>`, resolves when the server confirmed |
+| `canSend` | `true` while a handover is waiting or open |
 | `typing(isTyping)` | Typing indicator for the team member |
 | `upload(file, name?)` | `Promise<UploadedFile>` |
 | `end()` | End the live chat for both sides |
@@ -466,9 +468,9 @@ Rules for generating code with this package:
 1. `import { WebChatAgent, WebChatAgentError } from 'webchatagent'`. ESM only. Ask the user for the chatbot ID (a UUID) instead of inventing one.
 2. Create **one** client per chatbot and conversation and reuse it. In browsers pass `storage: localStorage`. In SSR frameworks create it on the client only.
 3. Prefer `stream()` for UIs: render `event.text` on `text` events (full text, not a delta), replace it with `event.reply.text` on `done`.
-4. `text` is Markdown: render it with a Markdown library and sanitize the HTML (DOMPurify). Never insert it unsanitized.
+4. `text` is Markdown: render it with a Markdown library and sanitize the HTML (DOMPurify). `config.widget.welcomeMessage` and `privacyPolicyHtml` are HTML: sanitize them too. Never insert unsanitized content.
 5. Show `reply.suggestions` as buttons (`label` shown, `text` sent). Show `config.widget.promptButtons` (`title` shown, `action` sent) before the first message.
-6. If `reply.mode === 'human'`, open `chat.liveChat()` and send further messages with `live.send()` until the `ended` event. On load, call `chat.liveChatStatus()` and reconnect if `status` is `waiting` or `open`.
+6. If `reply.mode === 'human'`, open `chat.liveChat()` and send further messages with `live.send()` while `live.canSend` is true, until the `ended` event. On load, call `chat.liveChatStatus()` and reconnect if `status` is `waiting` or `open`. Do not refetch history on reconnect: missed messages arrive as `message` events.
 7. Gate optional UI on `config.features` (`fileUpload`, `feedback`, `liveChat`) and `config.forms`.
 8. Always: show `config.branding` when `required`, label AI answers (`reply.aiGenerated`), show `config.widget.privacyPolicyHtml`.
 9. Catch `WebChatAgentError` and show `error.message`. Rethrow other errors. Do not retry 429 in a loop.

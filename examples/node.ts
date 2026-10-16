@@ -23,7 +23,6 @@ async function ask(question: string): Promise<void> {
   try {
     for await (const event of chat.stream(question)) {
       if (event.type === 'text') process.stdout.write(event.delta)
-      if (event.type === 'tool') process.stdout.write(`\n[using ${event.name}]\n`)
       if (event.type === 'done') {
         const { reply } = event
         if (reply.mode === 'human') console.log(`\n[a team member takes over, live chat ${reply.status ?? 'waiting'}]`)
@@ -39,7 +38,8 @@ async function ask(question: string): Promise<void> {
 }
 
 const config = await chat.getConfig()
-console.log(`${config.widget.title ?? 'Chat'}: ${config.widget.welcomeMessage ?? ''}`)
+const welcome = (config.widget.welcomeMessage ?? '').replace(/<[^>]*>/g, '') // HTML from the dashboard
+console.log(`${config.widget.title ?? 'Chat'}: ${welcome}`)
 console.log(`session ${chat.sessionId}`)
 
 const once = process.argv[2]
